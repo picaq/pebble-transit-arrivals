@@ -16,6 +16,7 @@ var Clay = require("@rebble/clay");
 var clayConfig = require("./config");
 var moddableProxy = require("@moddable/pebbleproxy");
 var transit = require("./transit511");
+var localSecrets = require("./localSecrets");
 
 // autoHandleEvents:false — we intercept webviewclosed so settings stay on
 // the phone instead of being pushed to the watch key-by-key.
@@ -23,8 +24,11 @@ var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
 var SETTINGS_KEY = "settings.v1";
 
+// localSecrets.apiKey is a local dev convenience (see scripts/inject-api-key.js
+// and .env.example) — seeds the settings page before you've saved anything
+// via Clay. It is never committed; on a fresh clone it's "".
 var DEFAULT_SETTINGS = {
-  apiKey: "",
+  apiKey: localSecrets.apiKey || "",
   agencies: ["SF", "BA", "AC", "GG", "SM"],
   radiusM: 500,
   maxStops: 8

@@ -105,8 +105,28 @@ pebble package install @rebble/clay            # settings page
 ### 4. Get a free 511.org API key
 
 1. Request a token at https://511.org/open-data/token (email verification).
-2. The key arrives by email. **Do not commit it to the repo** — you'll enter
-   it in the app's settings page (step 6), and it's stored only on your phone.
+2. The key arrives by email. **Do not commit it to the repo.** Copy
+   `.env.example` to `.env` and paste the key in as `TRANSIT_511_API_TOKEN`:
+
+   ```bash
+   cp .env.example .env
+   # then edit .env and set TRANSIT_511_API_TOKEN=<your key>
+   ```
+
+   `.env` is git-ignored. Then run:
+
+   ```bash
+   node scripts/inject-api-key.js
+   ```
+
+   This writes `src/pkjs/localSecrets.js` (also git-ignored), which
+   `index.js` uses to pre-fill the Clay settings page's API key field the
+   first time you open it — before you've saved anything for real. Re-run
+   the script whenever you change `.env`, and before `pebble build` (the
+   phone JS runtime has no `process.env`, so this has to happen on the
+   host). This is purely a local dev convenience — the key you actually
+   ship with is whatever's saved via the settings page (step 6), and it's
+   stored only on your phone, never on the watch or in the repo.
 
 Note the default limit: **60 API requests per hour per key**. The app is
 designed around this (stop lists cached for 7 days; arrivals refresh at most
