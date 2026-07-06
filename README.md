@@ -164,6 +164,20 @@ location; on real hardware your phone's GPS is used.
 3. In the Pebble phone app, open Transit Glance's **settings (gear icon)**,
    enter your 511 API key, pick your agencies, save.
 
+**Rebuilding after code changes:** once the app is already installed on your
+watch, pushing an update is the same install command — no uninstall step
+needed, it just overwrites the previous version:
+
+```bash
+pebble build
+pebble install --phone <PHONE_IP>
+pebble logs --phone <PHONE_IP>        # optional: watch + phone console output
+```
+
+Developer Connection must still be toggled on and the Pebble app in the
+foreground on the phone, or `pebble install` fails with
+`[Errno 111] Connection refused`.
+
 ### 7. Using the app
 
 | Button | Stop list screen | Arrivals screen |
