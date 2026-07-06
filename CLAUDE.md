@@ -181,6 +181,16 @@ pebble emu-battery --percent 20 --qemu localhost:12344
 pebble emu-accel tilt-left --qemu localhost:12344
 ```
 
+On WSL, `pebble emu-app-config` needs a way to open a URL in a real browser
+— install `wslu` and `export BROWSER=wslview` first, or it fails with
+"Couldn't find a suitable web browser". See README.md Troubleshooting for
+other environment setup gotchas (missing `wscript`/`src/c` scaffolding,
+`python3.X-venv` requirement, wrong dependency version ranges).
+
+`package.json`'s `pebble.uuid` must be a real UUID before running *any*
+`pebble` command in this directory — a placeholder value crashes
+`pebble-tool`'s analytics step on every invocation.
+
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 

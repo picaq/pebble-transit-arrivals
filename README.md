@@ -34,14 +34,39 @@ Pebble's modern **Alloy** framework (no C required).
 
 ### 1. Install the Pebble SDK
 
-Follow https://developer.repebble.com/sdk for your OS. Verify with:
+The original Pebble SDK is defunct (Pebble Inc. shut down in 2016); this
+project uses the community **Rebble** toolchain. Full instructions for your
+OS: https://developer.repebble.com/sdk
+
+**Verified path on Ubuntu / WSL Ubuntu 22.04:**
 
 ```bash
-pebble --version
+sudo apt install nodejs npm libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 \
+                  zlib1g libsndio7.0 python3.10-venv
+curl -LsSf https://astral.sh/uv/install.sh | sh   # installs uv (adds it to PATH)
+uv tool install pebble-tool
+pebble sdk install latest
 ```
 
-Alloy projects require a recent SDK (4.9+). Update with the instructions on
-that page if yours is older.
+(`python3.10-venv` isn't in Rebble's own docs, but `pebble sdk install` fails
+without it — the SDK installer builds a Python venv that needs `ensurepip`.)
+
+Verify with:
+
+```bash
+pebble --version   # expect: Pebble Tool v5.x (active SDK: v4.17 or newer)
+```
+
+Alloy projects require a recent SDK (4.9+).
+
+**If you're on WSL**, also install a way to open URLs in your Windows
+browser — `pebble emu-app-config` (step 5) and similar commands shell out to
+`webbrowser.open_new()`, which fails inside WSL with no browser binary:
+
+```bash
+sudo apt install -y wslu
+export BROWSER=wslview   # add to ~/.zshrc / ~/.bashrc to make permanent
+```
 
 ### 2. Personalize the manifest
 
@@ -57,6 +82,16 @@ that page if yours is older.
 > `package.json` / `src/embeddedjs/manifest.json` with this repo's, and merge
 > any fields your SDK version expects — keeping this repo's `messageKeys`,
 > `capabilities`, `dependencies`, and the `modules` list.
+>
+> This repo already includes the `wscript` and `src/c/mdbl.c` files that
+> `pebble build`/`pebble package install` require for a `"moddable"`-type
+> project — don't delete them even though this app has no hand-written C
+> code; they're generic boilerplate the SDK's build system needs to exist.
+
+> **Note:** until you replace the placeholder UUID above, running *any*
+> `pebble` command from inside this directory will crash with `ValueError:
+> badly formed hexadecimal UUID string` (pebble-tool tries to parse
+> `package.json` for analytics on every invocation). Fix the UUID first.
 
 ### 3. Install the two Pebble packages
 
@@ -122,6 +157,29 @@ Favorites appear at the top of the list with a ★ and persist on the watch.
 
 ## Troubleshooting
 
+- **"This project is very outdated, and cannot be handled by this SDK"** —
+  `pebble-tool` requires a `wscript` file (and, for `"moddable"` projects, a
+  `src/c/*.c` native entry point) to exist, even though this app is pure
+  JS. Already present in this repo; if you deleted them, regenerate with
+  `pebble new-project --alloy scratch` and copy `wscript` + `src/c/mdbl.c`
+  back in unmodified.
+- **`npm error notarget No matching version found for @moddable/pebbleproxy@^1.0.0`**
+  (or similar for `@rebble/clay`) — the version range in `package.json`
+  doesn't match anything published. Check the real versions with
+  `npm view @moddable/pebbleproxy versions` / `npm view @rebble/clay versions`
+  and use the latest in `package.json`'s `dependencies`.
+- **`pebble sdk install` fails building a venv** ("ensurepip is not
+  available") — install `python3.10-venv` (or your system's matching
+  `python3.X-venv` package) and retry.
+- **`pebble emu-app-config` (or anything else browser-based) fails with
+  "Couldn't find a suitable web browser"** — expected on a fresh WSL
+  install with no browser binary. Install `wslu` and
+  `export BROWSER=wslview` so it opens in your Windows browser instead. If
+  you additionally hit `TypeError: NamedTemporaryFile() got an unexpected
+  keyword argument 'delete_on_close'`, that's a `pebble-tool` bug on Python
+  <3.12 (it uses a 3.12-only kwarg) — remove that argument from
+  `open_config_page` in the installed `pebble_tool/util/browser.py`, or
+  upgrade to Python 3.12+ for `pebble-tool`'s own venv.
 - **"Set API key in app settings"** — step 4/6 not done, or the key was
   mistyped. Keys are UUID-shaped strings.
 - **"Rate limited"** — you exceeded 60 requests/hour. Wait, or request a
