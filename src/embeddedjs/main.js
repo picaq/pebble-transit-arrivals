@@ -56,7 +56,8 @@ const state = {
   arrivals: [],               // [{line, dest, min}]
   arrivalsStatus: "Loading…",
   refreshTimer: null,
-  lastFix: null               // {lat, lon}
+  lastFix: null,              // {lat, lon}
+  locationPending: false      // true while a Location() request is in flight
 };
 
 /* ------------------------------------------------------------------ list */
@@ -163,10 +164,12 @@ function formatDist(meters) {
 /* ------------------------------------------------------------- data flow */
 
 function requestLocationAndNearby() {
+  if (state.locationPending) return; // a request is already in flight
   state.status = "Locating…";
   draw();
   const location = new Location({
     onSample() {
+      state.locationPending = false;
       const sample = this.sample();
       this.close();
       if (!sample) {
@@ -176,8 +179,15 @@ function requestLocationAndNearby() {
       }
       state.lastFix = { lat: sample.latitude, lon: sample.longitude };
       fetchNearby();
+    },
+    onError() {
+      state.locationPending = false;
+      this.close();
+      state.status = "No location";
+      draw();
     }
   });
+  state.locationPending = true;
   location.configure({ enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
 }
 
