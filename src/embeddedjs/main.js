@@ -259,23 +259,23 @@ function closeArrivals() {
 
 /* --------------------------------------------------------------- buttons */
 
-// NOTE: because "back" is in this list, the back button no longer exits the
-// app automatically — press AND HOLD back to exit. This is standard Alloy
-// behavior (see Sensors and Input guide).
+// NOTE: registering "back" replaces its single-tap auto-exit behavior with
+// whatever we do below. We restore single-tap exit ourselves on the list
+// (root) screen via watch.exit() — see the Alloy globals (CLAUDE.md section 2).
 new Button({
   types: ["select", "up", "down", "back"],
   onPush(down, type) {
     if (!down) return; // act on press only
     if (state.mode === MODE_LIST) {
-      if (type === "up" && state.sel > 0) {
-        state.sel--; clampScroll(); draw();
+      if (type === "up") {
+        if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
+        else requestLocationAndNearby(); // already at top: pull to refresh
       } else if (type === "down" && state.sel < state.rows.length - 1) {
         state.sel++; clampScroll(); draw();
       } else if (type === "select" && state.rows.length) {
         openArrivals(state.rows[state.sel]);
       } else if (type === "back") {
-        // On the root screen, back re-runs the nearby search (pull to refresh).
-        requestLocationAndNearby();
+        watch.exit();
       }
     } else {
       if (type === "select" && state.stop) {

@@ -182,10 +182,10 @@ foreground on the phone, or `pebble install` fails with
 
 | Button | Stop list screen | Arrivals screen |
 |---|---|---|
-| Up / Down | Move selection | Manual refresh |
+| Up | Move selection (refresh nearby stops if already at top) | Manual refresh |
+| Down | Move selection | Manual refresh |
 | Select | Open stop's arrivals | ★ favorite / unfavorite the stop |
-| Back (press) | Re-run nearby search | Return to stop list |
-| Back (hold) | Exit app | Exit app |
+| Back | Exit app | Return to stop list |
 
 Favorites appear at the top of the list with a ★ and persist on the watch.
 
