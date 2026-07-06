@@ -28,7 +28,7 @@ const render = new Poco(screen);
 const fontHeader = new render.Font("Gothic-Bold", 18);
 const fontRow = new render.Font("Gothic-Bold", 18);
 const fontSub = new render.Font("Gothic-Regular", 14);
-const fontBig = new render.Font("Leco-Regular", 26);
+const fontBig = new render.Font("Leco-Bold", 26);
 
 const BLACK = render.makeColor(0, 0, 0);
 const WHITE = render.makeColor(255, 255, 255);
