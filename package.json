@@ -1,0 +1,31 @@
+{
+  "name": "transit-glance",
+  "author": "YOUR NAME <you@example.com>",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {
+    "@moddable/pebbleproxy": "^1.0.0",
+    "@rebble/clay": "^2.0.0"
+  },
+  "pebble": {
+    "displayName": "Transit Glance",
+    "uuid": "REPLACE-WITH-UUID-see-README-step-2",
+    "projectType": "moddable",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["emery"],
+    "capabilities": ["location", "configurable"],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "Request",
+      "Response",
+      "SettingsChanged"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}

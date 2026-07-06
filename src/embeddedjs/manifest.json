@@ -1,0 +1,9 @@
+{
+  "modules": {
+    "*": [
+      "./main",
+      "./favorites",
+      "./protocol"
+    ]
+  }
+}
