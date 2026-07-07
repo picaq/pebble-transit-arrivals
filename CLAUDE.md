@@ -182,9 +182,9 @@ before inventing a size.
 
 ```bash
 pebble build                        # compile (run from project root)
-pebble install --emulator emery     # run in the emulator
+pebble install --emulator basalt    # emulator dev loop (emery emulator is broken — section 11)
 pebble install --phone <PHONE_IP>   # sideload to a real watch via the phone
-pebble logs --emulator emery        # console.log output (both JS worlds)
+pebble logs --phone <PHONE_IP>      # pkjs (phone-side) logs ONLY — watch-side console.log never surfaces
 pebble emu-app-config               # open the Clay settings page (emulator)
 pebble emu-battery --percent 20 --qemu localhost:12344
 pebble emu-accel tilt-left --qemu localhost:12344
@@ -203,7 +203,41 @@ other environment setup gotchas (missing `wscript`/`src/c` scaffolding,
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 
-## 11. Checklist before declaring any change done
+## 11. Watch crashes / rendering bugs — MANDATORY reading order
+
+Hours have been lost in this repo fixing plausible-but-wrong causes of
+crashes. Before debugging **any** watch-side crash, blank screen, or memory
+error, read `docs/WATCH-DEBUGGING-PLAYBOOK.md` and follow its decision tree.
+Hard rules (evidence and details live in the playbook):
+
+- **Classify first.** Blank screen after a successful install = uncaught
+  exception during module evaluation (usually an invalid `render.Font`
+  family/size pair), *not* a rendering bug. `Alloy: Fatal Error / memory
+  full` = XS allocator failure, and on this watch it has fired from heap
+  **fragmentation caused by allocation churn in the `draw()` path** with
+  >50% of the heap free — audit churn before hunting leaks.
+  `fetch_watch_info` timeouts = toolchain/environment, never app code.
+- **Two-fix rule.** If a crash survives two targeted fixes, stop
+  hypothesizing and bisect from a known-good commit on real hardware
+  (playbook §D, or the `/bisect-watch-crash` skill). Pin the exact repro
+  (which stop, how many refreshes/scrolls) before fixing anything.
+- **Signals that lie:** `pebble build`'s RAM report (static, uninformative);
+  watch-side `console.log` (never surfaces via `pebble logs` — silence
+  proves nothing; draw diagnostics on screen instead, playbook §F); total
+  free heap at crash time; the `emery` emulator (broken in SDK 4.17, see
+  below).
+- If you learn a new crash pattern or invalidate one, **update the playbook
+  in the same change.**
+
+**The `emery` emulator is broken in this SDK** (v4.17 / pebble-tool 5.0.39):
+the app draws, but PebbleKit never connects and `ping`/`logs`/`screenshot`
+time out on `fetch_watch_info`. This reproduces with a stock scaffold — do
+not re-diagnose it as an app bug. Use `--emulator basalt` for
+platform-agnostic logic and real hardware (`--phone <IP>`) for everything
+else. If `--phone` hits the same timeout while port 9000 is reachable, the
+fix is restarting the phone (a human step — ask the user).
+
+## 12. Checklist before declaring any change done
 
 1. New embeddedjs file? → added to `manifest.json` modules.
 2. New AppMessage key? → added to `package.json` messageKeys AND to the
@@ -213,11 +247,20 @@ https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 5. Timers cleared when a screen closes (`Timer.clear`)?
 6. Rate-limit math still sane? (511 default: 60 requests/hour total.)
 7. No layout constants that break on a different `screen.width`?
-8. `pebble build` passes and the app runs in `--emulator emery`.
+8. `pebble build` passes and the app runs in `--emulator basalt` (the
+   `emery` emulator is broken — see section 11; hardware-y changes need a
+   real watch via `--phone <IP>`).
 9. If you changed behavior a human must act on (new setting, new API key,
    new package), update README.md.
+10. Nothing reachable from `draw()` allocates proportionally to string
+    length or list size (string concat/slice in loops, per-frame
+    objects/closures) — this exact pattern has crashed the watch with
+    "memory full" (see section 11 and the playbook).
+11. Every `new render.Font(family, size)` pair exists in the SDK's
+    `xsHost.c` font table — an invalid pair passes the build and blanks the
+    screen at runtime.
 
-## 12. Key documentation URLs (fetch these, don't guess)
+## 13. Key documentation URLs (fetch these, don't guess)
 
 - Index of everything: https://developer.repebble.com/llms.txt
 - Alloy getting started: https://developer.repebble.com/guides/alloy/getting-started.md

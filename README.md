@@ -191,6 +191,12 @@ Favorites appear at the top of the list with a ★ and persist on the watch.
 
 ## Troubleshooting
 
+For watch-side crashes, blank screens, and memory errors, the canonical
+guide is [docs/WATCH-DEBUGGING-PLAYBOOK.md](docs/WATCH-DEBUGGING-PLAYBOOK.md)
+— it classifies the known failure signatures and documents the debugging
+workflow that actually works on this hardware. The list below covers
+setup/environment issues.
+
 - **"This project is very outdated, and cannot be handled by this SDK"** —
   `pebble-tool` requires a `wscript` file (and, for `"moddable"` projects, a
   `src/c/*.c` native entry point) to exist, even though this app is pure
