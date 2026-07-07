@@ -231,6 +231,39 @@ Favorites appear at the top of the list with a ★ and persist on the watch.
 - **Nothing loads on real hardware** — confirm the watch is connected to the
   phone and the Pebble app is running; the watch's network and GPS both go
   through the phone.
+- **`Alloy: Fatal Error / memory full` on the watch** — a genuine XS
+  allocator failure (distinct from a plain crash), but on this watch it
+  showed up despite plenty of *total* free heap — the real cause was
+  fragmentation, not exhaustion. The concrete culprit found here: `main.js`'s
+  `ellipsize()` used to trim long names one character at a time, doing a
+  fresh string concat *and* a fresh substring on every character trimmed —
+  dozens of throwaway allocations per call, run for every row on every
+  `draw()`. Busy stops (more/longer text) and heavy scrolling/refreshing (more
+  `draw()` calls) made it measurably worse, matching what looked like a
+  vague, session-length-dependent memory leak. Fixed by binary-searching the
+  cut point instead (O(log n) allocations instead of O(n)). General lesson
+  for this codebase: watch RAM is small enough that repeated small
+  allocations inside anything called from `draw()` are worth auditing, even
+  when the *total* memory used looks nowhere near the limit.
+- **`pebble install --phone`/`pebble ping` time out on `fetch_watch_info`,
+  even though the Developer Connection port (9000) is reachable** — the
+  request goes out but nothing ever comes back; this is a stuck watch↔phone
+  Bluetooth session, not a code or network-routing problem. Escalating fixes,
+  roughly in order of least to most disruptive: confirm the watch shows
+  "Connected" (not just paired) in the Pebble app; toggle Developer
+  Connection off and back on; force-quit and reopen the Pebble app; toggle
+  the phone's Bluetooth radio off/on at the OS level; fully unpair and
+  re-pair the watch. If none of those clear it, a full **phone restart** is
+  the next step and has fixed this outright in testing here.
+- **`pebble install --emulator emery` never connects** — the watch draws its
+  first screen fine, but `watch.connected.pebblekit` never goes true and
+  every `pebble-tool` command needing a live connection (`ping`, `logs`,
+  `screenshot`) times out identically. Verified with a stock, unrelated Alloy
+  scaffold app: it hits the exact same wall on `emery` while connecting
+  instantly on `--emulator basalt`. This is a `qemu-pebble`/`pebble-tool`
+  limitation with Pebble Time 2 (`emery`) emulation in this SDK release, not
+  an app bug — for Pebble Time 2 development, test on real hardware via
+  `pebble install --phone <PHONE_IP>` instead.
 
 ## Extending
 
