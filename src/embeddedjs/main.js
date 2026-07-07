@@ -108,12 +108,25 @@ function drawHeader(title) {
   render.drawText(title, fontHeader, WHITE, (render.width - w) >> 1, 4);
 }
 
+// Binary search the cut point instead of trimming one character at a time:
+// the naive loop did a fresh `str + "…"` concat AND a `str.slice()` on every
+// single character trimmed (dozens of throwaway string allocations for a
+// long name), called for every row on every draw(). On this watch's tiny
+// heap, that churn adds up across a session (more scrolling/refreshing,
+// busier stops with more text = more allocations) until an unrelated
+// allocation fails from fragmentation despite free space existing elsewhere
+// — a real "Alloy: Fatal Error / memory full" seen in testing. Binary search
+// still allocates a substring per probe, but O(log n) instead of O(n).
 function ellipsize(str, font, maxWidth) {
   if (render.getTextWidth(str, font) <= maxWidth) return str;
-  while (str.length > 1 && render.getTextWidth(str + "…", font) > maxWidth) {
-    str = str.slice(0, -1);
+  const budget = maxWidth - render.getTextWidth("…", font);
+  let lo = 1, hi = str.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (render.getTextWidth(str.slice(0, mid), font) <= budget) lo = mid;
+    else hi = mid - 1;
   }
-  return str + "…";
+  return str.slice(0, lo) + "…";
 }
 
 function draw() {
