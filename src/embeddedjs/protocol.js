@@ -69,7 +69,7 @@ function handleResponse(raw) {
     return;
   }
   pending.delete(data.id);
-  if (entry.timer) clearTimeout(entry.timer);
+  if (entry.timer) Timer.clear(entry.timer);
   if (data.type === "error") {
     entry.reject(new Error(data.message || "unknown error"));
   } else {
