@@ -73,7 +73,10 @@ module.exports = [
       {
         type: "slider",
         messageKey: "MaxStops",
-        label: "Max nearby stops",
+        label: "Typical nearby stops",
+        description:
+          "Baseline stop count. Dense areas with many close-together stops " +
+          "(e.g. a busy downtown intersection) may show more than this.",
         defaultValue: 8,
         min: 3,
         max: 12,

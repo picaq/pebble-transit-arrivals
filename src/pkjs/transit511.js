@@ -143,6 +143,31 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 
 /* ------------------------------------------------------------ public API */
 
+// Absolute safety ceiling regardless of settings.maxStops — keeps the watch
+// list and the AppMessage payload bounded even in the densest area.
+var HARD_STOP_CEILING = 14;
+
+/**
+ * settings.maxStops is a typical/floor count, not a hard cutoff: once that
+ * many stops are found, keep extending the list while consecutive stops
+ * stay close together (a dense cluster, e.g. a busy downtown intersection
+ * with many lines), so we don't lop off part of a cluster at an arbitrary
+ * index. A widening gap between consecutive stops marks the cluster's edge.
+ * Bounded by HARD_STOP_CEILING either way.
+ */
+function selectNearbyStops(results, maxStops) {
+  var floor = Math.max(1, maxStops);
+  if (results.length <= floor) return results.slice(0, HARD_STOP_CEILING);
+  var count = floor;
+  while (count < HARD_STOP_CEILING && count < results.length) {
+    var cur = results[count - 1].dist;
+    var next = results[count].dist;
+    if (next > cur * 1.4 + 50) break; // gap: edge of the cluster
+    count++;
+  }
+  return results.slice(0, count);
+}
+
 /**
  * Find stops near (lat, lon) across all enabled agencies.
  * settings: { apiKey, agencies: ["SF", ...], radiusM, maxStops }
@@ -160,7 +185,15 @@ function findNearbyStops(lat, lon, settings, cb) {
     if (!agencies.length) {
       if (!results.length && errors.length) return cb(new Error(errors[0]));
       results.sort(function (a, b) { return a.dist - b.dist; });
-      return cb(null, results.slice(0, settings.maxStops));
+      var selected = selectNearbyStops(results, settings.maxStops);
+      // Extending past the usual ~8-stop payload budget: compact names
+      // further rather than raising the per-stop byte cost unbounded.
+      if (selected.length > 8) {
+        selected = selected.map(function (s) {
+          return { agency: s.agency, code: s.code, name: s.name.slice(0, 16), dist: s.dist };
+        });
+      }
+      return cb(null, selected);
     }
     var agency = agencies.shift();
     fetchStops(agency, settings.apiKey, function (err, stops) {

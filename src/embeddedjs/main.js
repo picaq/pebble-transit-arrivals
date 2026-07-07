@@ -29,14 +29,34 @@ const fontHeader = new render.Font("Gothic-Bold", 18);
 const fontRow = new render.Font("Gothic-Bold", 18);
 const fontSub = new render.Font("Gothic-Regular", 14);
 const fontBig = new render.Font("Leco-Bold", 26);
+const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arrivals screen
 
 const BLACK = render.makeColor(0, 0, 0);
 const WHITE = render.makeColor(255, 255, 255);
 const ACCENT = render.makeColor(0, 85, 255);   // header / selection
 const GRAY = render.makeColor(120, 120, 120);
+const DIR_GRAY = render.makeColor(60, 60, 60); // destination text — higher contrast than GRAY
+
+// Distinguishable colors cycled across route lines so easily-confused
+// numbers (e.g. "38" vs "38R") read apart at a glance.
+const LINE_COLORS = [
+  render.makeColor(0, 90, 200),
+  render.makeColor(200, 30, 30),
+  render.makeColor(0, 140, 60),
+  render.makeColor(140, 40, 180),
+  render.makeColor(210, 110, 0),
+  render.makeColor(0, 130, 130)
+];
+
+function colorForLine(line) {
+  let hash = 0;
+  for (let i = 0; i < line.length; i++) hash = (hash * 31 + line.charCodeAt(i)) | 0;
+  return LINE_COLORS[Math.abs(hash) % LINE_COLORS.length];
+}
 
 const HEADER_H = 28;
 const ROW_H = 40;
+const ARRIVAL_ROW_H = 44;
 const VISIBLE_ROWS = Math.floor((render.height - HEADER_H) / ROW_H);
 
 /* ----------------------------------------------------------------- state */
@@ -129,17 +149,17 @@ function draw() {
     } else {
       let y = HEADER_H + 4;
       for (const a of state.arrivals) {
-        if (y + ROW_H > render.height) break;
+        if (y + ARRIVAL_ROW_H > render.height) break;
         const minStr = a.min <= 0 ? "Now" : String(a.min);
         render.drawText(minStr, fontBig, BLACK, 6, y);
         const textX = 6 + render.getTextWidth("88", fontBig) + 8;
         render.drawText(
-          ellipsize(a.line, fontRow, render.width - textX - 4),
-          fontRow, BLACK, textX, y);
+          ellipsize(a.line, fontLine, render.width - textX - 4),
+          fontLine, colorForLine(a.line), textX, y);
         render.drawText(
           ellipsize(a.dest, fontSub, render.width - textX - 4),
-          fontSub, GRAY, textX, y + 20);
-        y += ROW_H;
+          fontSub, DIR_GRAY, textX, y + 26);
+        y += ARRIVAL_ROW_H;
       }
     }
     // Footer hint: favorite state
