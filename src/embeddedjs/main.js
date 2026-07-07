@@ -60,6 +60,17 @@ const ROW_H = 40;
 const ARRIVAL_ROW_H = 44;
 const VISIBLE_ROWS = Math.floor((render.height - HEADER_H) / ROW_H);
 
+// draw() must stay ALLOCATION-FREE (docs/WATCH-DEBUGGING-PLAYBOOK.md §B):
+// string churn in the render path fragments this watch's tiny heap until an
+// allocation fails ("memory full") with plenty of total free space. All text
+// is fitted/concatenated once when the underlying data changes, stored, and
+// only *drawn* here. Layout metrics are hoisted for the same reason.
+const LIST_TEXT_W = render.width - 12;
+const ARRIVAL_TEXT_X = 6 + render.getTextWidth("88", fontBig) + 8;
+const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
+const HINT_IS_FAV = "★ favorited — Select to remove";
+const HINT_NOT_FAV = "Select to ★ favorite";
+
 /* ----------------------------------------------------------------- state */
 
 const MODE_LIST = 0;
@@ -74,7 +85,9 @@ const state = {
   sel: 0,                     // selected row index
   top: 0,                     // first visible row index (scroll window)
   stop: null,                 // stop shown on the ARRIVALS screen
-  arrivals: [],               // [{line, dest, min}]
+  stopTitle: "",              // precomputed header text for the ARRIVALS screen
+  stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
+  arrivals: [],               // [{line, dest, min, + precomputed display fields}]
   arrivalsStatus: "Loading…",
   refreshTimer: null,
   lastFix: null,              // {lat, lon}
@@ -88,6 +101,12 @@ function rebuildRows() {
   const rows = state.favorites.map(f => ({ ...f, fav: true }));
   for (const s of state.nearby) {
     if (!favKeys.has(s.agency + ":" + s.code)) rows.push({ ...s, fav: false });
+  }
+  // Fit all row text now, once — draw() only reads these (see comment at top).
+  for (const row of rows) {
+    row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
+    row.subtitle = row.agency +
+      (row.dist !== undefined ? "  ·  " + formatDist(row.dist) : "");
   }
   state.rows = rows;
   if (state.sel >= rows.length) state.sel = Math.max(0, rows.length - 1);
@@ -117,6 +136,9 @@ function drawHeader(title) {
 // allocation fails from fragmentation despite free space existing elsewhere
 // — a real "Alloy: Fatal Error / memory full" seen in testing. Binary search
 // still allocates a substring per probe, but O(log n) instead of O(n).
+// Even that wasn't enough when called from draw() (the crash recurred), so
+// this now runs only when data changes (rebuildRows/prepareArrivals) — never
+// call it from the render path.
 function ellipsize(str, font, maxWidth) {
   if (render.getTextWidth(str, font) <= maxWidth) return str;
   const budget = maxWidth - render.getTextWidth("…", font);
@@ -147,43 +169,43 @@ function draw() {
         if (selected) render.fillRectangle(ACCENT, 0, y, render.width, ROW_H);
         const fg = selected ? WHITE : BLACK;
         const sub = selected ? WHITE : GRAY;
-        const prefix = row.fav ? "★ " : "";
-        render.drawText(
-          ellipsize(prefix + row.name, fontRow, render.width - 12),
-          fontRow, fg, 6, y + 2);
-        const subtitle = row.agency +
-          (row.dist !== undefined ? "  ·  " + formatDist(row.dist) : "");
-        render.drawText(subtitle, fontSub, sub, 6, y + 22);
+        render.drawText(row.title, fontRow, fg, 6, y + 2);
+        render.drawText(row.subtitle, fontSub, sub, 6, y + 22);
       }
     }
   } else {
-    drawHeader(state.stop ? shortName(state.stop.name) : "Arrivals");
+    drawHeader(state.stop ? state.stopTitle : "Arrivals");
     if (!state.arrivals.length) {
       render.drawText(state.arrivalsStatus, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
       let y = HEADER_H + 4;
       for (const a of state.arrivals) {
         if (y + ARRIVAL_ROW_H > render.height) break;
-        const minStr = a.min <= 0 ? "Now" : String(a.min);
-        render.drawText(minStr, a.min <= 0 ? fontNow : fontBig, BLACK, 6, y);
-        const textX = 6 + render.getTextWidth("88", fontBig) + 8;
-        render.drawText(
-          ellipsize(a.line, fontLine, render.width - textX - 4),
-          fontLine, colorForLine(a.line), textX, y);
-        render.drawText(
-          ellipsize(a.dest, fontSub, render.width - textX - 4),
-          fontSub, DIR_GRAY, textX, y + 26);
+        render.drawText(a.minStr, a.minFont, BLACK, 6, y);
+        render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
+        render.drawText(a.destText, fontSub, DIR_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
       }
     }
-    // Footer hint: favorite state
+    // Footer hint: favorite state (cached — never read storage from draw())
     if (state.stop) {
-      const hint = isFavorite(state.stop) ? "★ favorited — Select to remove"
-                                          : "Select to ★ favorite";
-      render.drawText(hint, fontSub, GRAY, 6, render.height - 18);
+      render.drawText(state.stopIsFav ? HINT_IS_FAV : HINT_NOT_FAV,
+                      fontSub, GRAY, 6, render.height - 18);
     }
   }
   render.end();
+}
+
+// Attach everything draw() needs to each arrival, once per response.
+function prepareArrivals(list) {
+  for (const a of list) {
+    a.minStr = a.min <= 0 ? "Now" : String(a.min);
+    a.minFont = a.min <= 0 ? fontNow : fontBig;
+    a.lineColor = colorForLine(a.line);
+    a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
+    a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
+  }
+  return list;
 }
 
 function shortName(name) {
@@ -246,6 +268,8 @@ function fetchNearby() {
 function openArrivals(stop) {
   state.mode = MODE_ARRIVALS;
   state.stop = stop;
+  state.stopTitle = shortName(stop.name);
+  state.stopIsFav = isFavorite(stop);
   state.arrivals = [];
   state.arrivalsStatus = "Loading…";
   draw();
@@ -261,7 +285,7 @@ function fetchArrivals() {
   protocol.arrivals(state.stop.agency, state.stop.code)
     .then(resp => {
       if (state.mode !== MODE_ARRIVALS) return;
-      state.arrivals = resp.arrivals || [];
+      state.arrivals = prepareArrivals(resp.arrivals || []);
       state.arrivalsStatus = state.arrivals.length ? "" : "No arrivals";
       draw();
     })
@@ -286,6 +310,7 @@ function closeArrivals() {
   stopRefreshTimer();
   state.mode = MODE_LIST;
   state.stop = null;
+  state.arrivals = [];
   state.favorites = loadFavorites();
   rebuildRows();
   draw();
@@ -313,7 +338,7 @@ new Button({
       }
     } else {
       if (type === "select" && state.stop) {
-        toggleFavorite(state.stop);
+        state.stopIsFav = toggleFavorite(state.stop);
         draw(); // footer hint updates
       } else if (type === "back") {
         closeArrivals();
