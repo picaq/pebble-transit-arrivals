@@ -37,6 +37,14 @@ const queue = [];            // requests made before the channel is writable
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+// Hard ceiling on simultaneous in-flight requests. Every pending request
+// pins real memory (handlers, timer, queued payload, and eventually a ~1 KB
+// response being parsed) until its round trip ends — stacking them crashed
+// the watch with "memory full" when a refresh button was hammered. Callers
+// should keep their own in-flight guards (see fetchArrivals in main.js);
+// this cap is the backstop that makes the mistake survivable.
+const MAX_PENDING = 6;
+
 const message = new Message({
   keys: ["Request", "Response", "SettingsChanged"],
   onReadable() {
@@ -95,6 +103,9 @@ function flushQueue() {
 }
 
 function request(body) {
+  if (pending.size >= MAX_PENDING) {
+    return Promise.reject(new Error("busy"));
+  }
   return new Promise((resolve, reject) => {
     const id = nextId++;
     body.id = id;

@@ -268,6 +268,10 @@ restarting the phone (a human step — ask the user).
 11. Every `new render.Font(family, size)` pair exists in the SDK's
     `xsHost.c` font table — an invalid pair passes the build and blanks the
     screen at runtime.
+12. Every user-triggerable request or sensor action has an in-flight guard
+    (`state.locationPending`, `state.arrivalsPending`) so button-mashing
+    can't stack concurrent cycles — stacked in-flight requests pin live
+    memory and have crashed the watch with "memory full" (playbook §B).
 
 ## 13. Key documentation URLs (fetch these, don't guess)
 

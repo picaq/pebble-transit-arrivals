@@ -96,6 +96,23 @@ established on real hardware in this repo:
   re-read and `JSON.parse`d favorites from localStorage on every redraw).
   Hold any fix in this class to that standard: zero allocations in the
   render path, not fewer.
+- **The crash survived even an allocation-free `draw()` — the real trigger
+  was request concurrency.** Third recurrence (2026-07-07): the pinned
+  repro was *hammering Down on the arrivals screen*, where Up/Down means
+  "manual refresh" and `fetchArrivals()` had no in-flight guard. Each press
+  launched a full concurrent request cycle (pending-map entry, timeout
+  timer, queued payload, then a ~1 KB response string, `JSON.parse`,
+  display prep) — and unlike GC-able churn, all of it is **live** until its
+  round trip completes, so a burst of presses spikes genuinely referenced
+  memory past the XS pool. Fixed with an in-flight guard
+  (`state.arrivalsPending`, mirroring the existing `locationPending`) plus
+  a `MAX_PENDING` backstop in protocol.js. Lesson: churn and leaks aren't
+  the only suspects — **any user-triggerable action that starts a
+  request/sensor cycle needs an in-flight guard**, because buttons can be
+  mashed faster than round trips complete. Also a repro-pinning lesson: the
+  first report said "list screen while scrolling"; the precise trigger
+  ("pressing Down too much *within a stop*") pointed at a completely
+  different code path. Get the exact screen and button before theorizing.
 
 Debugging order:
 
@@ -104,12 +121,20 @@ Debugging order:
    string length or list size. Red flags: string concatenation in loops,
    `slice`/`substring` in loops, array/object/closure creation inside the
    render path, `JSON.stringify` in the render path.
-2. Then audit true leaks: every `Timer.set`/`Timer.repeat` needs a
+2. **Audit concurrency next**: can any button press, timer, or event start
+   a request or sensor cycle while the previous one is still in flight?
+   Every such site needs an in-flight guard (`locationPending`,
+   `arrivalsPending`) — in-flight cycles pin live memory that GC cannot
+   reclaim, and a mashed button stacks them (this was the actual trigger
+   behind the 2026-07 crashes; see above).
+3. Then audit true leaks: every `Timer.set`/`Timer.repeat` needs a
    guaranteed `Timer.clear` path (screen close, promise settle — see
    commit `8cabdc8`); `pending` maps and queues need timeouts/bounds;
    `Location` must be closed in both `onSample` and `onError` and guarded
    against concurrent requests (commit `f9984eb`).
-3. If two fixes haven't stopped it → §D bisection. Do not write a third fix.
+4. If two fixes haven't stopped it → §D bisection or a discriminating
+   repro experiment (e.g. "scroll only, never refresh" vs "refresh only"),
+   whichever is cheaper. Do not write a third speculative fix.
 
 ---
 
@@ -217,6 +242,9 @@ Beyond CLAUDE.md §11:
   including promise rejection and screen close.
 - Sensors (`Location`) are one-shot: `close()` in both callbacks, plus an
   in-flight guard so repeated button presses can't stack instances.
+- Every user-triggerable request path (button-driven refreshes included) has
+  an in-flight guard, and protocol.js's `MAX_PENDING` backstop stays in
+  place — mashed buttons must produce no-ops, not stacked request cycles.
 - Test on **real hardware** before declaring memory/render changes done —
   the emulator situation (§C) means emulator-only testing proves little for
   emery-specific behavior, and memory-churn bugs need real session-length

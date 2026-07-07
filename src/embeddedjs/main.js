@@ -93,6 +93,7 @@ const state = {
   stopTitle: "",              // precomputed header text for the ARRIVALS screen
   stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
   arrivals: [],               // [{line, dest, min, + precomputed display fields}]
+  arrivalsPending: false,     // in-flight guard — see fetchArrivals()
   arrivalsStatus: "Loading…",
   refreshTimer: null,
   lastFix: null,              // {lat, lon}
@@ -307,6 +308,10 @@ function openArrivals(stop) {
   state.stopTitle = shortName(stop.name);
   state.stopIsFav = isFavorite(stop);
   state.arrivals = [];
+  // Reset the guard so a still-in-flight request for a previous stop can't
+  // block this screen's first fetch (its late response is ignored by the
+  // identity check in fetchArrivals).
+  state.arrivalsPending = false;
   state.arrivalsStatus = "Loading…";
   draw();
   fetchArrivals();
@@ -316,17 +321,28 @@ function openArrivals(stop) {
   state.refreshTimer = Timer.repeat(fetchArrivals, 60000);
 }
 
+// In-flight guard: Up/Down on the arrivals screen (and the 60 s auto-refresh
+// timer) land here, and WITHOUT the guard each press launched a whole
+// concurrent request cycle — pending-map entry, timeout timer, ~1 KB response
+// string, JSON.parse, prepareArrivals — all of it live (unreclaimable) until
+// its round trip finished. Hammering the button stacked enough simultaneous
+// cycles to abort the VM with "memory full" on real hardware. Extra presses
+// while a refresh is in flight are now no-ops.
 function fetchArrivals() {
-  if (!state.stop) return;
-  protocol.arrivals(state.stop.agency, state.stop.code)
+  if (!state.stop || state.arrivalsPending) return;
+  state.arrivalsPending = true;
+  const requested = state.stop;
+  protocol.arrivals(requested.agency, requested.code)
     .then(resp => {
-      if (state.mode !== MODE_ARRIVALS) return;
+      state.arrivalsPending = false;
+      if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       state.arrivals = prepareArrivals(resp.arrivals || []);
       state.arrivalsStatus = state.arrivals.length ? "" : "No arrivals";
       draw();
     })
     .catch(err => {
-      if (state.mode !== MODE_ARRIVALS) return;
+      state.arrivalsPending = false;
+      if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       console.log("arrivals failed: " + err.message);
       if (!state.arrivals.length) {
         state.arrivalsStatus = "Error: " + err.message;

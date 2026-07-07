@@ -255,7 +255,13 @@ setup/environment issues.
   cut point instead (O(log n) allocations instead of O(n)). General lesson
   for this codebase: watch RAM is small enough that repeated small
   allocations inside anything called from `draw()` are worth auditing, even
-  when the *total* memory used looks nowhere near the limit.
+  when the *total* memory used looks nowhere near the limit. A later
+  recurrence had a different trigger entirely: mashing the manual-refresh
+  button on the arrivals screen stacked concurrent request cycles (no
+  in-flight guard), whose live buffers spiked past the VM's memory pool.
+  Refresh actions are now guarded and the watch protocol caps in-flight
+  requests. Full decision tree:
+  [docs/WATCH-DEBUGGING-PLAYBOOK.md](docs/WATCH-DEBUGGING-PLAYBOOK.md).
 - **`pebble install --phone`/`pebble ping` time out on `fetch_watch_info`,
   even though the Developer Connection port (9000) is reachable** — the
   request goes out but nothing ever comes back; this is a stuck watch↔phone
