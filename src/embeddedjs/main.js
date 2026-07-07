@@ -29,6 +29,7 @@ const fontHeader = new render.Font("Gothic-Bold", 18);
 const fontRow = new render.Font("Gothic-Bold", 18);
 const fontSub = new render.Font("Gothic-Regular", 14);
 const fontBig = new render.Font("Leco-Bold", 26);
+const fontNow = new render.Font("Leco-Bold", 20); // "Now" label — 2/3 of fontBig; 20 is the closest valid Leco-Bold size
 const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arrivals screen
 
 const BLACK = render.makeColor(0, 0, 0);
@@ -151,7 +152,7 @@ function draw() {
       for (const a of state.arrivals) {
         if (y + ARRIVAL_ROW_H > render.height) break;
         const minStr = a.min <= 0 ? "Now" : String(a.min);
-        render.drawText(minStr, fontBig, BLACK, 6, y);
+        render.drawText(minStr, a.min <= 0 ? fontNow : fontBig, BLACK, 6, y);
         const textX = 6 + render.getTextWidth("88", fontBig) + 8;
         render.drawText(
           ellipsize(a.line, fontLine, render.width - textX - 4),
