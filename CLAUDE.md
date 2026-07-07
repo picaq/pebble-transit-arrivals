@@ -182,7 +182,7 @@ before inventing a size.
 
 ```bash
 pebble build                        # compile (run from project root)
-pebble install --emulator basalt    # emulator dev loop (emery emulator is broken — section 11)
+pebble install --emulator emery     # installs & renders, but nothing connection-based works — section 11
 pebble install --phone <PHONE_IP>   # sideload to a real watch via the phone
 pebble logs --phone <PHONE_IP>      # pkjs (phone-side) logs ONLY — watch-side console.log never surfaces
 pebble emu-app-config               # open the Clay settings page (emulator)
@@ -230,12 +230,19 @@ Hard rules (evidence and details live in the playbook):
   in the same change.**
 
 **The `emery` emulator is broken in this SDK** (v4.17 / pebble-tool 5.0.39):
-the app draws, but PebbleKit never connects and `ping`/`logs`/`screenshot`
-time out on `fetch_watch_info`. This reproduces with a stock scaffold — do
-not re-diagnose it as an app bug. Use `--emulator basalt` for
-platform-agnostic logic and real hardware (`--phone <IP>`) for everything
-else. If `--phone` hits the same timeout while port 9000 is reachable, the
-fix is restarting the phone (a human step — ask the user).
+the app installs and draws in the QEMU window, but PebbleKit never connects
+and `ping`/`logs`/`screenshot` time out on `fetch_watch_info`. This
+reproduces with a stock scaffold — do not re-diagnose it as an app bug.
+**This app cannot run on other emulators**: `targetPlatforms` is
+`["emery"]` and Alloy only supports emery/gabbro, so `pebble install
+--emulator basalt` fails with a bare "App install failed." (verified
+2026-07-07 — that message means no binary for the platform, not a broken
+build). basalt is only useful for toolchain sanity checks with a stock
+scaffold. Net: emulator verification for this app is limited to "install
+succeeds" plus a human eyeballing the emery QEMU window; everything else
+needs real hardware (`--phone <IP>`). If `--phone` hits the
+`fetch_watch_info` timeout while port 9000 is reachable, the fix is
+restarting the phone (a human step — ask the user).
 
 ## 12. Checklist before declaring any change done
 
@@ -247,15 +254,17 @@ fix is restarting the phone (a human step — ask the user).
 5. Timers cleared when a screen closes (`Timer.clear`)?
 6. Rate-limit math still sane? (511 default: 60 requests/hour total.)
 7. No layout constants that break on a different `screen.width`?
-8. `pebble build` passes and the app runs in `--emulator basalt` (the
-   `emery` emulator is broken — see section 11; hardware-y changes need a
-   real watch via `--phone <IP>`).
+8. `pebble build` passes and `pebble install --emulator emery` succeeds
+   (that's the most the emulator can verify — see section 11; behavior
+   changes need a real watch via `--phone <IP>`).
 9. If you changed behavior a human must act on (new setting, new API key,
    new package), update README.md.
-10. Nothing reachable from `draw()` allocates proportionally to string
-    length or list size (string concat/slice in loops, per-frame
-    objects/closures) — this exact pattern has crashed the watch with
-    "memory full" (see section 11 and the playbook).
+10. `draw()` and everything it calls allocate **nothing** — no string
+    concat/slice, no object/array/closure creation, no storage reads. All
+    display strings are precomputed when data changes (`rebuildRows`,
+    `prepareArrivals`). Draw-path churn has crashed the watch with "memory
+    full" **twice**, the second time even after the churn was merely
+    reduced rather than eliminated (see section 11 and the playbook).
 11. Every `new render.Font(family, size)` pair exists in the SDK's
     `xsHost.c` font table — an invalid pair passes the build and blanks the
     screen at runtime.

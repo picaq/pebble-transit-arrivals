@@ -85,6 +85,17 @@ established on real hardware in this repo:
 - The actual culprit was `ellipsize()` in `main.js` doing O(n) string
   concat+slice allocations per call, for every row, on every `draw()`.
   Fixed by binary-searching the cut point (commit `6ae75f8`).
+- **Reducing churn is not enough — the crash came back.** After the O(n)→
+  O(log n) ellipsize fix, the same "memory full" recurred on the list screen
+  during scrolling: the list `draw()` still allocated ~10 strings per row
+  per redraw (prefix concat, ellipsize probes, subtitle concat,
+  `formatDist`), and lists had gotten longer (up to 14 stops). The durable
+  fix was making `draw()` **allocation-free**: all display strings are
+  precomputed when data changes (`rebuildRows()`, `prepareArrivals()`) and
+  cached (`state.stopTitle`, `state.stopIsFav` — the footer previously
+  re-read and `JSON.parse`d favorites from localStorage on every redraw).
+  Hold any fix in this class to that standard: zero allocations in the
+  render path, not fewer.
 
 Debugging order:
 
@@ -108,10 +119,19 @@ Debugging order:
 A stock scaffold reproduces it identically.
 
 - **On `--emulator emery`:** the SDK 4.17 / pebble-tool 5.0.39 QEMU machine
-  model for emery (cortex-m33) is broken — the app draws but PebbleKit never
-  connects and `ping`/`logs`/`screenshot` all time out. **Unfixable from this
-  repo; do not re-diagnose.** Use `--emulator basalt` for platform-agnostic
-  logic (Poco/layout/protocol), and real hardware for anything else.
+  model for emery (cortex-m33) is broken — the app installs and draws in
+  the QEMU window, but PebbleKit never connects and
+  `ping`/`logs`/`screenshot` all time out. **Unfixable from this repo; do
+  not re-diagnose.** The emulator can therefore verify exactly two things:
+  the install succeeds, and (by a human looking at the window) the first
+  screen renders. Everything else needs real hardware.
+- **Do not try `--emulator basalt` for this app.** `targetPlatforms` is
+  `["emery"]` and Alloy only supports emery/gabbro, so a basalt install
+  fails with a bare "App install failed." (verified 2026-07-07) — that
+  message means "no binary for this platform", not a broken build, and even
+  `-v -v` won't say so. basalt is only useful for toolchain-level sanity
+  (`pebble ping`, pypkjs) with a stock `pebble new-project --alloy`
+  scaffold.
 - **On `--phone <IP>`:** if port 9000 connects but `WatchVersion` never gets
   a reply, it's a stuck watch↔phone Bluetooth dev-connection session. Things
   proven **not** to fix it: toggling Developer Connection, force-quitting
@@ -186,9 +206,12 @@ Since watch `console.log` is invisible:
 
 Beyond CLAUDE.md §11:
 
-- No per-character or per-item string building in anything reachable from
-  `draw()`. Budget: O(log n) allocations max per text fitted (see
-  `ellipsize()`), zero allocations preferred for static text.
+- `draw()` and everything reachable from it allocate **nothing**: no string
+  concat/slice, no objects/arrays/closures, no `JSON.parse`, no storage
+  reads. Precompute display strings when the data changes
+  (`rebuildRows()` / `prepareArrivals()`), cache derived flags on `state`.
+  This is a hard rule, not a budget — "fewer allocations" has already
+  failed once (§B).
 - Every `new render.Font(...)` pair verified against `xsHost.c`'s table.
 - Every timer has an owner responsible for clearing it on every exit path,
   including promise rejection and screen close.

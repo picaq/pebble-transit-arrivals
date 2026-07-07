@@ -6,3 +6,4 @@ dist/
 .env
 src/pkjs/localSecrets.js
 .lock-waf_linux_build
+.claude/settings.local.json
