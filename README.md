@@ -187,7 +187,12 @@ foreground on the phone, or `pebble install` fails with
 | Select | Open stop's arrivals | ★ favorite / unfavorite the stop |
 | Back | Exit app | Return to stop list |
 
-Favorites appear at the top of the list with a ★ and persist on the watch.
+Favorites appear at the top of the list with a ★ and persist on the watch,
+sorted nearest-first. A favorite that isn't useful right now draws dimmed
+(gray): either it's more than 12 miles away, or nothing is currently
+arriving there (its subtitle then says "no arrivals"). Checking arrivals
+costs one 511 request per nearby favorite, so results are cached for a few
+minutes — a stop that just went quiet can stay undimmed briefly.
 
 ## Troubleshooting
 

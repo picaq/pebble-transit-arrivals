@@ -71,6 +71,10 @@ const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
 const HINT_IS_FAV = "★ favorited — Select to remove";
 const HINT_NOT_FAV = "Select to ★ favorite";
 
+// Favorites farther than this (or with nothing arriving) draw dimmed.
+// 12 miles — keep in sync with ARRIVAL_CHECK_MAX_M in src/pkjs/transit511.js.
+const FAR_METERS = 19312;
+
 /* ----------------------------------------------------------------- state */
 
 const MODE_LIST = 0;
@@ -80,6 +84,7 @@ const state = {
   mode: MODE_LIST,
   status: "Locating…",        // status line when a screen has no rows yet
   favorites: loadFavorites(), // [{agency, code, name}]
+  favStatus: new Map(),       // "agency:code" -> {dist, hasArr} from the phone
   nearby: [],                 // [{agency, code, name, dist}]
   rows: [],                   // flattened list rows currently shown
   sel: 0,                     // selected row index
@@ -97,16 +102,38 @@ const state = {
 /* ------------------------------------------------------------------ list */
 
 function rebuildRows() {
+  // Distance fallback for favorites toggled since the last nearby refresh:
+  // they aren't in favStatus yet, but may be in the nearby results.
+  const nearbyDist = new Map(state.nearby.map(s => [s.agency + ":" + s.code, s.dist]));
+
+  const rows = state.favorites.map(f => {
+    const key = f.agency + ":" + f.code;
+    const st = state.favStatus.get(key);
+    const row = { ...f, fav: true };
+    if (st && st.dist >= 0) row.dist = st.dist;
+    else if (nearbyDist.has(key)) row.dist = nearbyDist.get(key);
+    row.noArr = !!st && st.hasArr === 0;
+    row.dim = row.noArr || (row.dist !== undefined && row.dist > FAR_METERS);
+    return row;
+  });
+  // Nearest favorites first; unknown distances sink to the bottom (sort is
+  // stable, so those keep their saved order).
+  rows.sort((x, y) =>
+    (x.dist === undefined ? Infinity : x.dist) -
+    (y.dist === undefined ? Infinity : y.dist));
+
   const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
-  const rows = state.favorites.map(f => ({ ...f, fav: true }));
   for (const s of state.nearby) {
     if (!favKeys.has(s.agency + ":" + s.code)) rows.push({ ...s, fav: false });
   }
   // Fit all row text now, once — draw() only reads these (see comment at top).
   for (const row of rows) {
     row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
-    row.subtitle = row.agency +
-      (row.dist !== undefined ? "  ·  " + formatDist(row.dist) : "");
+    row.subtitle = ellipsize(
+      row.agency +
+        (row.dist !== undefined ? "  ·  " + formatDist(row.dist) : "") +
+        (row.noArr ? "  ·  no arrivals" : ""),
+      fontSub, LIST_TEXT_W);
   }
   state.rows = rows;
   if (state.sel >= rows.length) state.sel = Math.max(0, rows.length - 1);
@@ -167,7 +194,9 @@ function draw() {
         const y = HEADER_H + i * ROW_H;
         const selected = idx === state.sel;
         if (selected) render.fillRectangle(ACCENT, 0, y, render.width, ROW_H);
-        const fg = selected ? WHITE : BLACK;
+        // Dimmed rows (favorite too far away / nothing arriving) go gray;
+        // selection stays white-on-accent so it's always readable.
+        const fg = selected ? WHITE : row.dim ? GRAY : BLACK;
         const sub = selected ? WHITE : GRAY;
         render.drawText(row.title, fontRow, fg, 6, y + 2);
         render.drawText(row.subtitle, fontSub, sub, 6, y + 22);
@@ -251,9 +280,16 @@ function fetchNearby() {
   if (!state.lastFix) return requestLocationAndNearby();
   state.status = "Finding stops…";
   draw();
-  protocol.nearbyStops(state.lastFix.lat, state.lastFix.lon)
+  const favKeys = state.favorites.map(f => f.agency + ":" + f.code);
+  protocol.nearbyStops(state.lastFix.lat, state.lastFix.lon, favKeys)
     .then(resp => {
       state.nearby = resp.stops || [];
+      state.favStatus = new Map();
+      if (Array.isArray(resp.favs)) {
+        for (const f of resp.favs) {
+          state.favStatus.set(f.a + ":" + f.c, { dist: f.d, hasArr: f.h });
+        }
+      }
       state.status = state.nearby.length ? "" : "No stops nearby";
       rebuildRows();
       draw();

@@ -169,10 +169,10 @@ before inventing a size.
 - Endpoints, quirks (UTF-8 BOM! 60 req/hr rate limit! huge stop lists!) and
   response shapes are documented at the top of `src/pkjs/transit511.js` and
   in `docs/511-API-NOTES.md`. Update those files if you learn something new.
-- **Provider boundary**: `index.js` only calls `findNearbyStops()` and
-  `getArrivals()`. To support another region/agency outside 511, create
-  `src/pkjs/transitXYZ.js` exporting the same two functions and select the
-  provider from settings. Do not leak provider-specific shapes past this
+- **Provider boundary**: `index.js` only calls `findNearbyStops()`,
+  `getArrivals()` and `getFavoriteStatus()`. To support another
+  region/agency outside 511, create `src/pkjs/transitXYZ.js` exporting the
+  same three functions and select the provider from settings. Do not leak provider-specific shapes past this
   boundary — the watch protocol format is provider-neutral.
 - If an operator code is uncertain, fetch
   `https://api.511.org/transit/operators?api_key=KEY&format=json` rather

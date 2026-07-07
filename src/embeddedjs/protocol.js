@@ -11,10 +11,14 @@
  *   phone -> watch : { Response: "<json string>" }
  *
  * Request JSON:
- *   { id, cmd: "nearby",   lat, lon }
+ *   { id, cmd: "nearby",   lat, lon, favs: ["AGENCY:code", ...] }
  *   { id, cmd: "arrivals", agency, stop }
  * Response JSON:
- *   { id, type: "stops",    stops:    [{ agency, code, name, dist }] }
+ *   { id, type: "stops",    stops: [{ agency, code, name, dist }],
+ *                           favs:  [{ a, c, d, h? }] }   // per favorite:
+ *                           // d = meters (-1 unknown), h = 1/0 has-arrivals
+ *                           // (absent = not checked); keys compacted for
+ *                           // payload budget
  *   { id, type: "arrivals", arrivals: [{ line, dest, min }] }
  *   { id, type: "error",    message }
  *
@@ -111,9 +115,14 @@ export const protocol = {
   /** Optional hook: set to a function to be told when phone settings changed. */
   onSettingsChanged: null,
 
-  /** Ask the phone for stops near a lat/lon. Resolves to { stops: [...] }. */
-  nearbyStops(lat, lon) {
-    return request({ cmd: "nearby", lat, lon });
+  /**
+   * Ask the phone for stops near a lat/lon. favs is an optional array of
+   * "AGENCY:code" favorite keys; when present the phone also reports each
+   * favorite's distance and service status. Resolves to
+   * { stops: [...], favs: [...] }.
+   */
+  nearbyStops(lat, lon, favs) {
+    return request({ cmd: "nearby", lat, lon, favs: favs || [] });
   },
 
   /** Ask the phone for live arrivals at one stop. Resolves to { arrivals: [...] }. */

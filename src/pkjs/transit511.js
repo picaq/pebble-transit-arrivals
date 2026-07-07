@@ -25,8 +25,9 @@
  *     the watch — only the top-N nearest stops go over AppMessage.
  *
  * This module is provider-agnostic at its boundary: index.js only calls
- * findNearbyStops() and getArrivals(). To support a non-511 region, write a
- * sibling module with the same two functions and switch on a setting.
+ * findNearbyStops(), getArrivals() and getFavoriteStatus(). To support a
+ * non-511 region, write a sibling module with the same three functions and
+ * switch on a setting.
  */
 
 /* eslint-env browser */
@@ -219,6 +220,88 @@ function findNearbyStops(lat, lon, settings, cb) {
   })();
 }
 
+/* --------------------------------------------------------- favorite status */
+
+// The watch dims favorites that are too far away or have nothing arriving.
+// Distance comes free from the cached stop lists; "has arrivals" costs one
+// StopMonitoring request per favorite, so it is (a) skipped beyond
+// ARRIVAL_CHECK_MAX_M — those are dimmed for distance alone — and (b)
+// cached for a few minutes so repeated nearby refreshes stay inside the
+// 60 requests/hour budget.
+var ARRIVAL_CHECK_MAX_M = 19312; // 12 miles — keep in sync with FAR_METERS in src/embeddedjs/main.js
+var ARR_CACHE_TTL_MS = 3 * 60 * 1000;
+var arrivalCache = {}; // "AGENCY:code" -> { ts, hasArr }
+
+/**
+ * Distance and service status for the watch's favorite stops.
+ * favs: [{ agency, code }] (≤ 10 — the watch caps favorites)
+ * cb(null, [{ agency, code, dist, hasArr? }]) — dist in meters, -1 when the
+ * stop can't be found; hasArr only present when it was actually checked.
+ * Never fails as a whole: unresolvable favorites just come back dist -1.
+ */
+function getFavoriteStatus(favs, lat, lon, settings, cb) {
+  // Group by agency so each stop list is loaded (and its cache JSON-parsed)
+  // once, not per favorite.
+  var byAgency = {};
+  for (var i = 0; i < favs.length; i++) {
+    (byAgency[favs[i].agency] = byAgency[favs[i].agency] || []).push(favs[i].code);
+  }
+  var agencies = Object.keys(byAgency);
+  var entries = [];
+
+  (function nextAgency() {
+    if (!agencies.length) return checkArrivals();
+    var agency = agencies.shift();
+    fetchStops(agency, settings.apiKey, function (err, stops) {
+      var codes = byAgency[agency];
+      for (var i = 0; i < codes.length; i++) {
+        var dist = -1;
+        if (!err) {
+          for (var j = 0; j < stops.length; j++) {
+            if (stops[j][0] === codes[i]) {
+              dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
+              break;
+            }
+          }
+        }
+        entries.push({ agency: agency, code: codes[i], dist: dist });
+      }
+      nextAgency();
+    });
+  })();
+
+  // Arrivals checks run in parallel: each is one small StopMonitoring
+  // response, and the watch's 15 s request timeout can't absorb up to ten
+  // of them back-to-back.
+  function checkArrivals() {
+    var pending = [];
+    for (var i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      if (entry.dist < 0 || entry.dist > ARRIVAL_CHECK_MAX_M) continue;
+      var cached = arrivalCache[entry.agency + ":" + entry.code];
+      if (cached && Date.now() - cached.ts < ARR_CACHE_TTL_MS) {
+        entry.hasArr = cached.hasArr;
+      } else {
+        pending.push(entry);
+      }
+    }
+    if (!pending.length) return cb(null, entries);
+    var remaining = pending.length;
+    pending.forEach(function (entry) {
+      getArrivals(entry.agency, entry.code, settings.apiKey, function (aErr, arrivals) {
+        if (!aErr) {
+          entry.hasArr = arrivals.length > 0;
+          arrivalCache[entry.agency + ":" + entry.code] = {
+            ts: Date.now(),
+            hasArr: entry.hasArr
+          };
+        }
+        if (--remaining === 0) cb(null, entries);
+      });
+    });
+  }
+}
+
 /**
  * Live arrivals for one stop via SIRI StopMonitoring.
  * cb(err, arrivals) where arrivals = [{ line, dest, min }] soonest first.
@@ -268,5 +351,6 @@ function getArrivals(agency, stopCode, apiKey, cb) {
 
 module.exports = {
   findNearbyStops: findNearbyStops,
-  getArrivals: getArrivals
+  getArrivals: getArrivals,
+  getFavoriteStatus: getFavoriteStatus
 };

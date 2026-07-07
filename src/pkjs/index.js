@@ -126,6 +126,18 @@ function respond(id, body) {
   );
 }
 
+// The watch sends favorites as compact "AGENCY:code" strings.
+function parseFavs(raw) {
+  if (!Array.isArray(raw)) return [];
+  var out = [];
+  for (var i = 0; i < raw.length && out.length < 10; i++) {
+    var s = String(raw[i]);
+    var idx = s.indexOf(":");
+    if (idx > 0) out.push({ agency: s.slice(0, idx), code: s.slice(idx + 1) });
+  }
+  return out;
+}
+
 function handleRequest(req) {
   var settings = loadSettings();
 
@@ -139,7 +151,25 @@ function handleRequest(req) {
   if (req.cmd === "nearby") {
     transit.findNearbyStops(req.lat, req.lon, settings, function (err, stops) {
       if (err) return respond(req.id, { type: "error", message: err.message });
-      respond(req.id, { type: "stops", stops: stops });
+      var favs = parseFavs(req.favs);
+      if (!favs.length) return respond(req.id, { type: "stops", stops: stops });
+      transit.getFavoriteStatus(favs, req.lat, req.lon, settings, function (fErr, favStatus) {
+        var body = { type: "stops", stops: stops };
+        if (!fErr && favStatus && favStatus.length) {
+          // Compact keys — this rides in the same ~1 KB payload as stops.
+          body.favs = favStatus.map(function (f) {
+            var e = { a: f.agency, c: f.code, d: f.dist };
+            if (f.hasArr !== undefined) e.h = f.hasArr ? 1 : 0;
+            return e;
+          });
+        }
+        // Payload budget: favorites status can push a dense stop list past
+        // ~1 KB; shed the farthest nearby stops before breaking AppMessage.
+        while (JSON.stringify(body).length > 950 && body.stops.length > 4) {
+          body.stops.pop();
+        }
+        respond(req.id, body);
+      });
     });
   } else if (req.cmd === "arrivals") {
     transit.getArrivals(req.agency, req.stop, settings.apiKey, function (err, arrivals) {
