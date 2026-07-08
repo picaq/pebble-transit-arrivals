@@ -309,8 +309,38 @@ function getFavoriteStatus(favs, lat, lon, settings, cb) {
 /**
  * Live arrivals for one stop via SIRI StopMonitoring.
  * cb(err, arrivals) where arrivals = [{ line, dest, min }] soonest first.
+ *
+ * Cached for ARRIVALS_TTL_MS: the watch's manual refresh (Up/Down) and 60 s
+ * auto-refresh can fire far faster than the 60 req/hour budget tolerates.
+ * The cache stores absolute arrival times and recomputes the minutes at
+ * serve time, so a cached answer still ticks down correctly.
  */
+var ARRIVALS_TTL_MS = 45 * 1000;
+var fullArrivalsCache = {}; // "AGENCY:code" -> { ts, list: [{line, dest, when}] }
+
+function serveArrivals(list) {
+  var now = Date.now();
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var ms = list[i].when - now;
+    if (ms < -60000) continue; // already gone
+    out.push({
+      line: list[i].line,
+      dest: list[i].dest,
+      min: Math.max(0, Math.round(ms / 60000))
+    });
+  }
+  out.sort(function (a, b) { return a.min - b.min; });
+  return out;
+}
+
 function getArrivals(agency, stopCode, apiKey, cb) {
+  var cacheKey = agency + ":" + stopCode;
+  var cached = fullArrivalsCache[cacheKey];
+  if (cached && Date.now() - cached.ts < ARRIVALS_TTL_MS) {
+    return cb(null, serveArrivals(cached.list));
+  }
+
   var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
     "&agency=" + encodeURIComponent(agency) +
     "&stopcode=" + encodeURIComponent(stopCode) + "&format=json";
@@ -328,8 +358,8 @@ function getArrivals(agency, stopCode, apiKey, cb) {
     if (!Array.isArray(visits)) visits = [visits];
 
     var now = Date.now();
-    var arrivals = [];
-    for (var i = 0; i < visits.length && arrivals.length < 6; i++) {
+    var list = [];
+    for (var i = 0; i < visits.length && list.length < 6; i++) {
       var mvj = visits[i] && visits[i].MonitoredVehicleJourney;
       if (!mvj) continue;
       var call = mvj.MonitoredCall || {};
@@ -338,18 +368,18 @@ function getArrivals(agency, stopCode, apiKey, cb) {
       if (!when) continue;
       var ms = Date.parse(when) - now;
       if (ms < -60000) continue; // already gone
-      arrivals.push({
+      list.push({
         line: String(mvj.LineRef || mvj.PublishedLineName || "?").slice(0, 10),
         dest: String(
           (Array.isArray(mvj.DestinationName)
             ? mvj.DestinationName[0]
             : mvj.DestinationName) || ""
         ).slice(0, 24),
-        min: Math.max(0, Math.round(ms / 60000))
+        when: now + ms
       });
     }
-    arrivals.sort(function (a, b) { return a.min - b.min; });
-    cb(null, arrivals);
+    fullArrivalsCache[cacheKey] = { ts: now, list: list };
+    cb(null, serveArrivals(list));
   });
 }
 
