@@ -93,7 +93,7 @@ when it would hit the footer.
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
 | "Now" (arrival due) | `prepareArrivals()`, `main.js:222` |
-| Subtitle format `"SF · 320 m · no arrivals"` | built on the **phone**, `buildRows()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`) |
+| Subtitle format `"SF · 320 m · IB/OB · 8,45,30+"` (agency · distance · direction(s) · serving lines, or `· no arrivals` when dimmed) | built on the **phone**, `buildRows()` + `dirLinesSuffix()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`); direction/lines from the agency-wide stop-info map (`getStopInfo()`, `transit511.js`) — directions capped at 2, lines at 3 (`+` marks more), line tokens sliced to 4 chars |
 | Settings-page labels & descriptions (incl. "Favorite stops" section, "Hide favorites beyond (km)") | `src/pkjs/config.js`; dynamic favorites section built in `showConfiguration`, `index.js:118-138` |
 
 Watch-side strings cost heap; keep them short. Subtitle/label formatting
@@ -121,7 +121,7 @@ has crashed the watch (CLAUDE.md §12 item 12).
 |---|---|---|
 | Arrivals auto-refresh while screen open | 60 s | `Timer.repeat` in `openArrivals()`, `main.js:293` |
 | Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:318` |
-| Favorite has-arrivals cache | 3 min | `ARR_CACHE_TTL_MS`, `transit511.js:230` |
+| Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js` — one StopMonitoring call per agency, no stopcode |
 | Stop-list cache | 7 days | `STOP_CACHE_TTL_MS`, `transit511.js:38` |
 | Watch request timeout | 15 s | `REQUEST_TIMEOUT_MS`, `protocol.js:48` |
 | Phone HTTP timeout | 20 s | `getJSON()`, `transit511.js:45` |
@@ -145,7 +145,7 @@ remove toggles on the Clay settings page.
 |---|---|---|
 | Max favorites | 10 | `MAX_FAVORITES`, `index.js:43` |
 | Hide a favorite from the list | farther than `hideFavKm` setting (default 19 km / ~12 mi) — stays saved, reappears when near; costs no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js:244` |
-| Dim a favorite | nothing currently arriving (subtitle gains "· no arrivals") | `buildRows()`, `index.js` |
+| Dim a favorite | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map — no per-favorite API calls | `buildRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
 | New favorite position | added to the front of the saved list | `fav` handler, `index.js:309-322` |
 | One-time migration | the watch sends its legacy watch-side `favorites.v1` JSON with nearby requests (`mig` field) until one succeeds, then deletes it | `main.js:240`, `importLegacyFavs()` in `index.js` |
 
@@ -156,7 +156,7 @@ remove toggles on the Clay settings page.
 | Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14 | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js:149-170` |
 | Search radius | `radiusM` setting, default 500 m | settings, `index.js:31` |
-| Rows payload budget | 700 B — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js:268` |
+| Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js` |
 | Arrivals per stop | max 6 | parse loop, `transit511.js:362` |
 
 ## 10. Text truncation lengths

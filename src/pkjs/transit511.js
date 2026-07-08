@@ -25,9 +25,9 @@
  *     the watch — only the top-N nearest stops go over AppMessage.
  *
  * This module is provider-agnostic at its boundary: index.js only calls
- * findNearbyStops(), getArrivals() and getFavoriteStatus(). To support a
- * non-511 region, write a sibling module with the same three functions and
- * switch on a setting.
+ * findNearbyStops(), getArrivals(), getFavoriteStatus() and getStopInfo().
+ * To support a non-511 region, write a sibling module with the same four
+ * functions and switch on a setting.
  */
 
 /* eslint-env browser */
@@ -222,13 +222,55 @@ function findNearbyStops(lat, lon, settings, cb) {
 
 /* --------------------------------------------------------- favorite status */
 
-// The list dims favorites that have nothing arriving. Distance comes free
-// from the cached stop lists; "has arrivals" costs one StopMonitoring
-// request per favorite, so it is (a) skipped beyond maxCheckM — the caller
-// hides those favorites entirely — and (b) cached for a few minutes so
-// repeated nearby refreshes stay inside the 60 requests/hour budget.
-var ARR_CACHE_TTL_MS = 3 * 60 * 1000;
-var arrivalCache = {}; // "AGENCY:code" -> { ts, hasArr }
+/* ------------------------------------------------------ agency stop info */
+
+// One agency-wide StopMonitoring call (no stopcode) answers, for every stop
+// with upcoming service: which lines serve it, in which direction(s), and —
+// by mere presence in the map — that something is arriving. Cached 10 min
+// (a stop's lines/directions change slowly). This single cached call powers
+// the list subtitles AND replaces what used to be one StopMonitoring call
+// per favorite for the has-arrivals check.
+var STOP_INFO_TTL_MS = 10 * 60 * 1000;
+var stopInfoCache = {}; // agency -> { ts, map: { code: { dirs: [], lines: [] } } }
+
+function getStopInfo(agency, apiKey, cb) {
+  var cached = stopInfoCache[agency];
+  if (cached && Date.now() - cached.ts < STOP_INFO_TTL_MS) {
+    return cb(null, cached.map);
+  }
+  var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
+    "&agency=" + encodeURIComponent(agency) + "&format=json";
+  getJSON(url, function (err, data) {
+    if (err) return cb(err);
+    var visits;
+    try {
+      var delivery = data.ServiceDelivery.StopMonitoringDelivery;
+      if (Array.isArray(delivery)) delivery = delivery[0];
+      visits = delivery.MonitoredStopVisit || [];
+    } catch (e) {
+      return cb(new Error("Unexpected 511 response"));
+    }
+    if (!Array.isArray(visits)) visits = [visits];
+    var map = {};
+    for (var i = 0; i < visits.length; i++) {
+      var v = visits[i];
+      var mvj = v && v.MonitoredVehicleJourney;
+      if (!mvj) continue;
+      var code = String(v.MonitoringRef ||
+        (mvj.MonitoredCall && mvj.MonitoredCall.StopPointRef) || "");
+      if (!code) continue;
+      var e = map[code] || (map[code] = { dirs: [], lines: [] });
+      var dir = String(mvj.DirectionRef || "");
+      if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
+      var line = String(mvj.LineRef || "").slice(0, 4);
+      if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
+    }
+    stopInfoCache[agency] = { ts: Date.now(), map: map };
+    console.log("stop info " + agency + ": " + visits.length + " visits, " +
+      Object.keys(map).length + " stops");
+    cb(null, map);
+  });
+}
 
 /**
  * Distance, name, and service status for the favorite stops.
@@ -274,35 +316,29 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
     });
   })();
 
-  // Arrivals checks run in parallel: each is one small StopMonitoring
-  // response, and the watch's 15 s request timeout can't absorb up to ten
-  // of them back-to-back.
+  // has-arrivals now comes from the cached agency-wide stop-info map:
+  // presence in the map = something is coming. One cached call per agency
+  // instead of one StopMonitoring call per favorite.
   function checkArrivals() {
-    var pending = [];
-    for (var i = 0; i < entries.length; i++) {
-      var entry = entries[i];
-      if (entry.dist < 0 || entry.dist > maxCheckM) continue;
-      var cached = arrivalCache[entry.agency + ":" + entry.code];
-      if (cached && Date.now() - cached.ts < ARR_CACHE_TTL_MS) {
-        entry.hasArr = cached.hasArr;
-      } else {
-        pending.push(entry);
-      }
-    }
-    if (!pending.length) return cb(null, entries);
-    var remaining = pending.length;
-    pending.forEach(function (entry) {
-      getArrivals(entry.agency, entry.code, settings.apiKey, function (aErr, arrivals) {
-        if (!aErr) {
-          entry.hasArr = arrivals.length > 0;
-          arrivalCache[entry.agency + ":" + entry.code] = {
-            ts: Date.now(),
-            hasArr: entry.hasArr
-          };
-        }
-        if (--remaining === 0) cb(null, entries);
-      });
+    var checkAgencies = {};
+    entries.forEach(function (entry) {
+      if (entry.dist >= 0 && entry.dist <= maxCheckM) checkAgencies[entry.agency] = 1;
     });
+    var list = Object.keys(checkAgencies);
+    (function nextInfo() {
+      if (!list.length) return cb(null, entries);
+      var agency = list.shift();
+      getStopInfo(agency, settings.apiKey, function (err, map) {
+        if (!err) {
+          entries.forEach(function (entry) {
+            if (entry.agency === agency && entry.dist >= 0 && entry.dist <= maxCheckM) {
+              entry.hasArr = !!map[entry.code];
+            }
+          });
+        }
+        nextInfo();
+      });
+    })();
   }
 }
 
@@ -386,5 +422,6 @@ function getArrivals(agency, stopCode, apiKey, cb) {
 module.exports = {
   findNearbyStops: findNearbyStops,
   getArrivals: getArrivals,
-  getFavoriteStatus: getFavoriteStatus
+  getFavoriteStatus: getFavoriteStatus,
+  getStopInfo: getStopInfo
 };

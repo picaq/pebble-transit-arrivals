@@ -211,19 +211,36 @@ function formatDistM(m) {
   return (m / 1000).toFixed(1) + " km";
 }
 
+// " · N · 8,14,49+" from an agency stop-info entry (directions capped at 2,
+// lines at 3 — subtitle space on the watch is one ellipsized line).
+function dirLinesSuffix(info) {
+  if (!info) return "";
+  var s = "";
+  if (info.dirs.length) s += " · " + info.dirs.slice(0, 2).join("/");
+  if (info.lines.length) {
+    s += " · " + info.lines.slice(0, 3).join(",") + (info.lines.length > 3 ? "+" : "");
+  }
+  return s;
+}
+
 // Build the display-ready rows list the watch renders verbatim: favorites
 // (nearest first, dimmed when serviceless) followed by nearby non-favorite
 // stops. Favorites farther than settings.hideFavKm are left out entirely —
 // no payload bytes, no arrival-check API calls (they reappear when you get
-// closer, and stay editable on the settings page). All formatting lives
-// here because watch code costs watch heap (playbook §B).
+// closer, and stay editable on the settings page). Subtitles carry the
+// stop's direction and serving lines from the cached agency-wide stop-info
+// map. All formatting lives here because watch code costs watch heap
+// (playbook §B).
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
     var favs = loadFavs();
     var hideM = (Number(settings.hideFavKm) || 19) * 1000;
 
-    var finish = function (favStatus) {
+    var assemble = function (favStatus, infoByAgency) {
+      var infoFor = function (agency, code) {
+        return infoByAgency[agency] && infoByAgency[agency][code];
+      };
       var status = {}; // "AGENCY:code" -> {dist, name, hasArr}
       (favStatus || []).forEach(function (f) {
         status[f.agency + ":" + f.code] = f;
@@ -240,7 +257,7 @@ function buildRows(req, lat, lon, settings) {
           n: (st && st.name) || f.name,
           s: f.agency +
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
-            (noArr ? " · no arrivals" : ""),
+            (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(f.agency, f.code))),
           f: 1,
           _d: dist === undefined ? 1e9 : dist
         };
@@ -256,24 +273,51 @@ function buildRows(req, lat, lon, settings) {
         if (favKeys[s.agency + ":" + s.code]) return;
         rows.push({
           a: s.agency, c: s.code, n: s.name,
-          s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "")
+          s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
+            dirLinesSuffix(infoFor(s.agency, s.code))
         });
       });
 
+      // Response-order trace (★ = favorite) — reads as the on-watch order.
+      console.log("rows order: " + rows.map(function (r) {
+        return (r.f ? "*" : "") + ((r.s.split(" · ")[1]) || "?");
+      }).join(", "));
+
       var body = { type: "rows", rows: rows };
-      // Payload budget: 700 B, tighter than the usual ~1 KB discipline —
-      // the watch parses this while its chunk heap has only a few KB of
-      // slack on 32 KB-arena firmware (playbook §B). Shed the farthest
-      // nearby stops first; favorites are never shed.
-      while (JSON.stringify(body).length > 700 && rows.length > favRows.length) {
+      // Payload budget: 880 B (was 700 before subtitles grew direction and
+      // line info) — the watch parses this while its chunk heap has only a
+      // few KB of slack on 32 KB-arena firmware (playbook §B). Shed the
+      // farthest nearby stops first; favorites are never shed.
+      while (JSON.stringify(body).length > 880 && rows.length > favRows.length) {
         rows.pop();
       }
       respond(req.id, body);
     };
 
-    if (!favs.length) return finish([]);
+    // Fetch the stop-info map for every agency that will appear in the rows
+    // (cache-hit free within 10 min; getFavoriteStatus warmed the favorites'
+    // agencies already).
+    var withInfo = function (favStatus) {
+      var agSet = {};
+      stops.forEach(function (s) { agSet[s.agency] = 1; });
+      (favStatus || []).forEach(function (f) {
+        if (f.dist >= 0 && f.dist <= hideM) agSet[f.agency] = 1;
+      });
+      var infoByAgency = {};
+      var list = Object.keys(agSet);
+      (function next() {
+        if (!list.length) return assemble(favStatus, infoByAgency);
+        var ag = list.shift();
+        transit.getStopInfo(ag, settings.apiKey, function (e, map) {
+          if (!e) infoByAgency[ag] = map;
+          next();
+        });
+      })();
+    };
+
+    if (!favs.length) return withInfo([]);
     transit.getFavoriteStatus(favs, lat, lon, settings, hideM, function (fErr, favStatus) {
-      finish(fErr ? [] : favStatus);
+      withInfo(fErr ? [] : favStatus);
     });
   });
 }
