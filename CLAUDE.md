@@ -6,6 +6,13 @@ You are working on a **Pebble smartwatch app written in JavaScript** using the
 you of. Read it fully before writing code. When in doubt, fetch the official
 docs — the index is at https://developer.repebble.com/llms.txt
 
+Before changing anything the user sees or does — fonts, colors, layout
+metrics, on-screen strings, button mappings, refresh cadence, list caps,
+truncation lengths, settings defaults — read `design.md` first: it
+catalogs every such value with its code location and the constraint that
+applies to changing it. If your change alters one of those values, update
+`design.md` in the same commit.
+
 ## 1. The two JavaScript worlds (never confuse them)
 
 | Directory | Runs on | Engine | Module system | Has network? | Has localStorage? |
@@ -293,7 +300,8 @@ restarting the phone (a human step — ask the user).
    (that's the most the emulator can verify — see section 11; behavior
    changes need a real watch via `--phone <IP>`).
 9. If you changed behavior a human must act on (new setting, new API key,
-   new package), update README.md.
+   new package), update README.md. If you changed a user-visible style or
+   behavior (any value cataloged in `design.md`), update `design.md`.
 10. `draw()` and everything it calls allocate **nothing** — no string
     concat/slice, no object/array/closure creation, no storage reads. All
     display strings are precomputed when data changes (`rebuildRows`,
