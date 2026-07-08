@@ -198,14 +198,15 @@ foreground on the phone, or `pebble install` fails with
 | Back | Exit app | Return to stop list |
 
 Favorites appear at the top of the list with a ★, sorted nearest-first.
-They are stored on the phone and can also be managed from the settings
-page (each favorite gets a remove toggle there). A favorite farther away
-than the "Hide favorites beyond" setting (default 19 km / ~12 mi) is left
-off the list entirely — it stays saved and reappears when you're near it
-again. A nearby favorite with nothing currently arriving draws dimmed
-(gray, subtitle "no arrivals"). Checking arrivals costs one 511 request
-per nearby favorite, so results are cached for a few minutes — a stop that
-just went quiet can stay undimmed briefly.
+They are stored on the phone; the settings page lists them with a
+show/hide toggle each — hiding keeps the favorite saved but takes its
+stop off the watch until you toggle it back (deleting for good is done on
+the watch, by unfavoriting from the stop's arrivals screen). A favorite
+farther away than the "Hide favorites beyond" setting (default 19 km /
+~12 mi) also drops off the list and reappears when you're near it again.
+A nearby favorite with nothing currently arriving draws dimmed (gray,
+subtitle "no arrivals"); service info comes from one cached agency-wide
+request, so a stop that just went quiet can stay undimmed briefly.
 
 ## Troubleshooting
 

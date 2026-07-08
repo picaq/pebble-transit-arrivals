@@ -154,9 +154,9 @@ before inventing a size.
   once for migration, then deletes it. Also available: `device.keyValue`
   and `device.files` for binary/large data.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
-  the favorites list (`favorites.v1` — [{agency, code, name}], capped 10,
-  edited from the watch's "fav" request and the Clay page's remove
-  toggles), and the 7-day stop caches (`stops511.v1.<AGENCY>`).
+  the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
+  capped 10, edited from the watch's "fav" request and the Clay page's
+  show/hide toggles), and the 7-day stop caches (`stops511.v1.<AGENCY>`).
 - Always merge stored settings over defaults (spread pattern) so adding new
   settings fields never breaks old installs.
 

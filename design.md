@@ -137,14 +137,16 @@ longer cache degrades freshness less than you'd expect.
 ## 8. Favorites (owned by the PHONE)
 
 Favorites live in phone localStorage (`favorites.v1` —
-`[{agency, code, name}]`), not on the watch. Managed two ways: Select on
-the watch's arrivals screen (a `fav` protocol request), and per-favorite
-remove toggles on the Clay settings page.
+`[{agency, code, name, hide?}]`), not on the watch. Managed two ways:
+Select on the watch's arrivals screen adds/deletes (a `fav` protocol
+request), and per-favorite **show/hide toggles** on the Clay settings page
+(hiding keeps the favorite saved; a hidden favorite's stop disappears from
+the watch entirely — it doesn't reappear as an unstarred nearby stop).
 
 | Behavior | Value | Where |
 |---|---|---|
 | Max favorites | 10 | `MAX_FAVORITES`, `index.js:43` |
-| Hide a favorite from the list | farther than `hideFavKm` setting (default 19 km / ~12 mi) — stays saved, reappears when near; costs no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js:244` |
+| Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — reappears when near; (b) its settings-page toggle is off (`hide` flag). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
 | Dim a favorite | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map — no per-favorite API calls | `buildRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
 | New favorite position | added to the front of the saved list | `fav` handler, `index.js:309-322` |
 | One-time migration | the watch sends its legacy watch-side `favorites.v1` JSON with nearby requests (`mig` field) until one succeeds, then deletes it | `main.js:240`, `importLegacyFavs()` in `index.js` |
@@ -182,7 +184,7 @@ phone-side caps raises payload size — re-check the 700 B budget in §9.
 | `radiusM` | 500 | Nearby search radius |
 | `maxStops` | 8 | Soft cap, see §9 |
 | `hideFavKm` | 19 (slider 1–100) | Favorites beyond this are left off the watch list, see §8 |
-| Favorite stops section | dynamic | One `Keep_<agency>_<code>` remove-toggle per saved favorite, appended before the submit button each time the page opens (`showConfiguration`) |
+| Favorite stops section | dynamic | One `Show_<agency>_<code>` show/hide toggle per saved favorite (sets/clears the `hide` flag; deletion happens on the watch), appended before the submit button each time the page opens (`showConfiguration`) |
 
 Settings live on the phone only; the watch just gets a `SettingsChanged`
 ping and re-runs the nearby search. To add one: `config.js` field →

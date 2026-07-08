@@ -123,14 +123,20 @@ Pebble.addEventListener("showConfiguration", function () {
   if (favs.length) {
     var items = [
       { type: "heading", defaultValue: "Favorite stops" },
-      { type: "text", defaultValue: "Uncheck a stop and save to remove it." }
+      {
+        type: "text",
+        defaultValue:
+          "Toggle whether a favorite appears on the watch. Hidden " +
+          "favorites stay saved here; to delete one for good, unfavorite " +
+          "it on the watch (Select on its arrivals screen)."
+      }
     ];
     favs.forEach(function (f) {
       items.push({
         type: "toggle",
-        messageKey: "Keep_" + f.agency + "_" + f.code,
+        messageKey: "Show_" + f.agency + "_" + f.code,
         label: f.name + " (" + f.agency + ")",
-        defaultValue: true
+        defaultValue: !f.hide
       });
     });
     cfg.push({ type: "section", items: items });
@@ -174,14 +180,21 @@ Pebble.addEventListener("webviewclosed", function (e) {
   saveSettings(settings);
   console.log("settings saved: " + JSON.stringify(settings));
 
-  // Drop favorites whose remove-toggle was unchecked.
+  // Apply the show/hide toggles — hiding keeps the favorite saved, it just
+  // stops appearing on the watch (deletion happens on the watch instead).
   var favs = loadFavs();
-  var kept = favs.filter(function (f) {
-    return val("Keep_" + f.agency + "_" + f.code, true);
+  var changed = 0;
+  favs.forEach(function (f) {
+    var hide = !val("Show_" + f.agency + "_" + f.code, !f.hide);
+    if (hide !== !!f.hide) {
+      if (hide) f.hide = 1;
+      else delete f.hide;
+      changed++;
+    }
   });
-  if (kept.length !== favs.length) {
-    saveFavs(kept);
-    console.log("favorites removed via settings: " + (favs.length - kept.length));
+  if (changed) {
+    saveFavs(favs);
+    console.log("favorite visibility changed via settings: " + changed);
   }
 
   // Nudge the watch so it can re-run its nearby search.
@@ -234,7 +247,12 @@ function dirLinesSuffix(info) {
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
-    var favs = loadFavs();
+    var allFavs = loadFavs();
+    // Hidden favorites (settings-page toggle) cost nothing: no status
+    // lookups, no payload. They stay in the exclusion set below, though, so
+    // the stop vanishes from the watch entirely rather than reappearing as
+    // an unstarred nearby stop.
+    var favs = allFavs.filter(function (f) { return !f.hide; });
     var hideM = (Number(settings.hideFavKm) || 19) * 1000;
 
     var assemble = function (favStatus, infoByAgency) {
@@ -267,7 +285,7 @@ function buildRows(req, lat, lon, settings) {
       favRows.sort(function (x, y) { return x._d - y._d; });
 
       var favKeys = {};
-      favs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
+      allFavs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
       var rows = favRows.map(function (r) { delete r._d; return r; });
       stops.forEach(function (s) {
         if (favKeys[s.agency + ":" + s.code]) return;
