@@ -110,9 +110,12 @@ before inventing a size.
   if `@moddable/pebbleproxy` is installed and wired in pkjs — but responses
   land in watch RAM, so only do this for small payloads. Wait for
   `watch.connected.pebblekit === true` before any network call.
-- The proxy is also required for the watch `Location` sensor
-  (`embedded:sensor/Location`, one-shot: call `this.close()` in `onSample`).
-  Requires `"location"` in `capabilities` in package.json.
+- The proxy would also be required for the watch `Location` sensor
+  (`embedded:sensor/Location`). **This app deliberately uses neither**: the
+  location fix is taken on the phone (`navigator.geolocation` in pkjs,
+  needs `"location"` in `capabilities`) because the proxy and the Location
+  flow cost watch code and heap (playbook §B), and the phone's fix is the
+  same GPS anyway.
 
 ## 6. Watch↔phone messaging protocol (this project)
 
@@ -122,11 +125,17 @@ before inventing a size.
   `onReadable` → `this.read()` returns a Map, `write(new Map([...]))` sends.
   A new Message starts **suspended**; wait for `onWritable` (protocol.js
   already queues for you).
-- Phone side: `Pebble.addEventListener("appmessage", ...)`; **the proxy gets
-  first look** — `if (moddableProxy.appMessageReceived(e)) return;` — then
-  handle your own keys. Reply with `Pebble.sendAppMessage({...})`.
-- Payload discipline: JSON strings under ~1 KB. Truncate names, cap list
-  lengths (8 stops / 6 arrivals). If you need more, add chunking
+- Phone side: `Pebble.addEventListener("appmessage", ...)`. Reply with
+  `Pebble.sendAppMessage({...})`. (If the pebbleproxy is ever reintroduced,
+  it must get first look at every appmessage before your own keys.)
+- **Startup handshake:** the watch does NOT request at boot — its request
+  would race pkjs startup and vanish. pkjs sends `SettingsChanged: 1` from
+  its `ready` handler; the watch's `protocol.onSettingsChanged` runs the
+  first nearby fetch. Keep this when touching either side.
+- Payload discipline: JSON strings under ~700 B for the rows response (the
+  watch parses it with only a few KB of chunk-heap slack on 32 KB-arena
+  firmware — playbook §B), ~1 KB elsewhere. Truncate names, cap list
+  lengths, shed farthest stops first. If you need more, add chunking
   (`seq`/`total` fields) — do not just raise the caps.
 - Request/response correlation is via an `id` field; see protocol.js.
 

@@ -233,10 +233,12 @@ var ARR_CACHE_TTL_MS = 3 * 60 * 1000;
 var arrivalCache = {}; // "AGENCY:code" -> { ts, hasArr }
 
 /**
- * Distance and service status for the watch's favorite stops.
+ * Distance, name, and service status for the watch's favorite stops.
  * favs: [{ agency, code }] (≤ 10 — the watch caps favorites)
- * cb(null, [{ agency, code, dist, hasArr? }]) — dist in meters, -1 when the
- * stop can't be found; hasArr only present when it was actually checked.
+ * cb(null, [{ agency, code, dist, name?, hasArr? }]) — dist in meters, -1
+ * when the stop can't be found; name comes from the cached stop list (absent
+ * on a cache/API miss — the watch falls back to its saved name); hasArr only
+ * present when it was actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
  */
 function getFavoriteStatus(favs, lat, lon, settings, cb) {
@@ -256,15 +258,17 @@ function getFavoriteStatus(favs, lat, lon, settings, cb) {
       var codes = byAgency[agency];
       for (var i = 0; i < codes.length; i++) {
         var dist = -1;
+        var name;
         if (!err) {
           for (var j = 0; j < stops.length; j++) {
             if (stops[j][0] === codes[i]) {
               dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
+              name = stops[j][1].slice(0, 24);
               break;
             }
           }
         }
-        entries.push({ agency: agency, code: codes[i], dist: dist });
+        entries.push({ agency: agency, code: codes[i], dist: dist, name: name });
       }
       nextAgency();
     });

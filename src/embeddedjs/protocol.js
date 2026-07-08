@@ -11,14 +11,20 @@
  *   phone -> watch : { Response: "<json string>" }
  *
  * Request JSON:
- *   { id, cmd: "nearby",   lat, lon, favs: ["AGENCY:code", ...] }
+ *   { id, cmd: "nearby",   favs: [{ a, c, n }, ...] }   // the watch's saved
+ *                          // favorites (agency, code, name); the PHONE takes
+ *                          // the location fix itself (navigator.geolocation)
  *   { id, cmd: "arrivals", agency, stop }
  * Response JSON:
- *   { id, type: "stops",    stops: [{ agency, code, name, dist }],
- *                           favs:  [{ a, c, d, h? }] }   // per favorite:
- *                           // d = meters (-1 unknown), h = 1/0 has-arrivals
- *                           // (absent = not checked); keys compacted for
- *                           // payload budget
+ *   { id, type: "rows",     rows: [{ a, c, n, s, m? }] }
+ *                           // One pre-merged, pre-sorted, display-ready list:
+ *                           // favorites (nearest first) then nearby stops.
+ *                           // a=agency, c=code, n=name (truncated),
+ *                           // s=subtitle string ("SF · 320 m · no arrivals"),
+ *                           // m=1 dimmed. The watch only fits text to the
+ *                           // screen — all formatting happens on the phone to
+ *                           // keep watch code (and therefore watch heap —
+ *                           // see the playbook §B) small.
  *   { id, type: "arrivals", arrivals: [{ line, dest, min }] }
  *   { id, type: "error",    message }
  *
@@ -127,13 +133,12 @@ export const protocol = {
   onSettingsChanged: null,
 
   /**
-   * Ask the phone for stops near a lat/lon. favs is an optional array of
-   * "AGENCY:code" favorite keys; when present the phone also reports each
-   * favorite's distance and service status. Resolves to
-   * { stops: [...], favs: [...] }.
+   * Ask the phone for the display-ready stop list (favorites + nearby). The
+   * phone takes the location fix itself. favs is the watch's saved favorites
+   * as [{ a, c, n }]. Resolves to { rows: [...] }.
    */
-  nearbyStops(lat, lon, favs) {
-    return request({ cmd: "nearby", lat, lon, favs: favs || [] });
+  nearbyStops(favs) {
+    return request({ cmd: "nearby", favs: favs || [] });
   },
 
   /** Ask the phone for live arrivals at one stop. Resolves to { arrivals: [...] }. */

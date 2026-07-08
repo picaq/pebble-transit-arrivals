@@ -25,7 +25,7 @@ Pebble's modern **Alloy** framework (no C required).
     │   ├── favorites.js      ← ★ favorites persisted in watch storage
     │   └── protocol.js       ← watch side of the watch↔phone protocol
     └── pkjs/                 ← runs ON YOUR PHONE (network, settings)
-        ├── index.js          ← proxy + settings + request router
+        ├── index.js          ← settings + geolocation + request router
         ├── config.js         ← settings page (Clay)
         └── transit511.js     ← 511.org client (nearby stops, arrivals)
 ```
@@ -93,14 +93,16 @@ export BROWSER=wslview   # add to ~/.zshrc / ~/.bashrc to make permanent
 > badly formed hexadecimal UUID string` (pebble-tool tries to parse
 > `package.json` for analytics on every invocation). Fix the UUID first.
 
-### 3. Install the two Pebble packages
+### 3. Install the Pebble package
 
 From the project root:
 
 ```bash
-pebble package install @moddable/pebbleproxy   # phone proxy (GPS/location)
 pebble package install @rebble/clay            # settings page
 ```
+
+(The app takes its location fix on the phone via PebbleKit JS
+`navigator.geolocation`, so `@moddable/pebbleproxy` is no longer needed.)
 
 ### 4. Get a free 511.org API key
 

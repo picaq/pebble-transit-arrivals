@@ -18,9 +18,13 @@
 import Poco from "commodetto/Poco";
 import Button from "pebble/button";
 import Timer from "timer";
-import Location from "embedded:sensor/Location";
 import protocol from "./protocol";
 import { loadFavorites, isFavorite, toggleFavorite } from "./favorites";
+
+// NOTE ON CODE SIZE: this module's compiled bytecode loads into the same
+// 32 KB XS arena as the runtime heap (playbook §B) — keep the watch side
+// thin. Formatting, sorting, and merging happen on the PHONE (src/pkjs);
+// this file only draws rows, fits text to the screen, and handles buttons.
 
 /* ---------------------------------------------------------------- render */
 
@@ -71,10 +75,6 @@ const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
 const HINT_IS_FAV = "★ favorited — Select to remove";
 const HINT_NOT_FAV = "Select to ★ favorite";
 
-// Favorites farther than this (or with nothing arriving) draw dimmed.
-// 12 miles — keep in sync with ARRIVAL_CHECK_MAX_M in src/pkjs/transit511.js.
-const FAR_METERS = 19312;
-
 /* ----------------------------------------------------------------- state */
 
 const MODE_LIST = 0;
@@ -82,63 +82,65 @@ const MODE_ARRIVALS = 1;
 
 const state = {
   mode: MODE_LIST,
-  status: "Locating…",        // status line when a screen has no rows yet
+  status: "Loading…",         // status line when a screen has no rows yet
   favorites: loadFavorites(), // [{agency, code, name}]
-  favStatus: new Map(),       // "agency:code" -> {dist, hasArr} from the phone
-  nearby: [],                 // [{agency, code, name, dist}]
-  rows: [],                   // flattened list rows currently shown
+  rowsSrc: null,              // last rows payload from the phone, null before first response
+  rows: [],                   // display rows currently shown
   sel: 0,                     // selected row index
   top: 0,                     // first visible row index (scroll window)
   stop: null,                 // stop shown on the ARRIVALS screen
   stopTitle: "",              // precomputed header text for the ARRIVALS screen
   stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
-  arrivals: [],               // [{line, dest, min, + precomputed display fields}]
+  arrivals: [],               // [{line, dest, min, + display fields fitted in draw()}]
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
   arrivalsStatus: "Loading…",
   refreshTimer: null,
-  lastFix: null,              // {lat, lon}
-  locationPending: false      // true while a Location() request is in flight
+  nearbyPending: false        // in-flight guard — see fetchNearby()
 };
 
 /* ------------------------------------------------------------------ list */
 
+// Rows arrive from the phone pre-merged (favorites first, nearest first),
+// pre-sorted, and with subtitles already formatted. This only re-derives the
+// ★ flag from the watch's own favorites (which can change between refreshes
+// via the toggle on the arrivals screen). Text fitting happens lazily in
+// draw() — see fitVisibleRows().
 function rebuildRows() {
-  // Distance fallback for favorites toggled since the last nearby refresh:
-  // they aren't in favStatus yet, but may be in the nearby results.
-  const nearbyDist = new Map(state.nearby.map(s => [s.agency + ":" + s.code, s.dist]));
-
-  const rows = state.favorites.map(f => {
-    const key = f.agency + ":" + f.code;
-    const st = state.favStatus.get(key);
-    const row = { ...f, fav: true };
-    if (st && st.dist >= 0) row.dist = st.dist;
-    else if (nearbyDist.has(key)) row.dist = nearbyDist.get(key);
-    row.noArr = !!st && st.hasArr === 0;
-    row.dim = row.noArr || (row.dist !== undefined && row.dist > FAR_METERS);
-    return row;
-  });
-  // Nearest favorites first; unknown distances sink to the bottom (sort is
-  // stable, so those keep their saved order).
-  rows.sort((x, y) =>
-    (x.dist === undefined ? Infinity : x.dist) -
-    (y.dist === undefined ? Infinity : y.dist));
-
-  const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
-  for (const s of state.nearby) {
-    if (!favKeys.has(s.agency + ":" + s.code)) rows.push({ ...s, fav: false });
-  }
-  // Fit all row text now, once — draw() only reads these (see comment at top).
-  for (const row of rows) {
-    row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
-    row.subtitle = ellipsize(
-      row.agency +
-        (row.dist !== undefined ? "  ·  " + formatDist(row.dist) : "") +
-        (row.noArr ? "  ·  no arrivals" : ""),
-      fontSub, LIST_TEXT_W);
+  let rows;
+  if (state.rowsSrc) {
+    const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
+    rows = state.rowsSrc.map(r => {
+      let name = r.n; // phone omits n for favorites missing from its caches
+      if (name === undefined) {
+        const f = state.favorites.find(f => f.agency === r.a && f.code === r.c);
+        name = f ? f.name : r.c;
+      }
+      return {
+        agency: r.a, code: r.c, name, sub: r.s,
+        fav: favKeys.has(r.a + ":" + r.c), dim: !!r.m
+      };
+    });
+  } else {
+    // Before the first response: saved favorites, agency-only subtitles.
+    rows = state.favorites.map(f => ({ ...f, sub: f.agency, fav: true, dim: false }));
   }
   state.rows = rows;
   if (state.sel >= rows.length) state.sel = Math.max(0, rows.length - 1);
   clampScroll();
+}
+
+// Fit a row's text once; cached on the row, so steady-state draws allocate
+// nothing. Called only from draw(), inside begin()/end() — the only place
+// text measurement has proven safe on this platform (playbook §B/§F).
+function fitVisibleRows() {
+  const end = Math.min(state.rows.length, state.top + VISIBLE_ROWS);
+  for (let i = state.top; i < end; i++) {
+    const row = state.rows[i];
+    if (row.title === undefined) {
+      row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
+      row.subtitle = ellipsize(row.sub, fontSub, LIST_TEXT_W);
+    }
+  }
 }
 
 function clampScroll() {
@@ -184,6 +186,7 @@ function draw() {
   render.fillRectangle(WHITE, 0, 0, render.width, render.height);
 
   if (state.mode === MODE_LIST) {
+    fitVisibleRows(); // no-op once the visible rows are fitted
     drawHeader("Transit Glance");
     if (!state.rows.length) {
       render.drawText(state.status, fontSub, GRAY, 8, HEADER_H + 12);
@@ -211,6 +214,11 @@ function draw() {
       let y = HEADER_H + 4;
       for (const a of state.arrivals) {
         if (y + ARRIVAL_ROW_H > render.height) break;
+        if (a.lineText === undefined) {
+          // Fit lazily, in-frame, once per arrival (see fitVisibleRows()).
+          a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
+          a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
+        }
         render.drawText(a.minStr, a.minFont, BLACK, 6, y);
         render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
         render.drawText(a.destText, fontSub, DIR_GRAY, ARRIVAL_TEXT_X, y + 26);
@@ -226,14 +234,12 @@ function draw() {
   render.end();
 }
 
-// Attach everything draw() needs to each arrival, once per response.
+// Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
 function prepareArrivals(list) {
   for (const a of list) {
     a.minStr = a.min <= 0 ? "Now" : String(a.min);
     a.minFont = a.min <= 0 ? fontNow : fontBig;
     a.lineColor = colorForLine(a.line);
-    a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
-    a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
   }
   return list;
 }
@@ -242,60 +248,27 @@ function shortName(name) {
   return name.length > 18 ? name.slice(0, 17) + "…" : name;
 }
 
-function formatDist(meters) {
-  if (meters < 1000) return Math.round(meters) + " m";
-  return (meters / 1000).toFixed(1) + " km";
-}
-
 /* ------------------------------------------------------------- data flow */
 
-function requestLocationAndNearby() {
-  if (state.locationPending) return; // a request is already in flight
-  state.status = "Locating…";
-  draw();
-  const location = new Location({
-    onSample() {
-      state.locationPending = false;
-      const sample = this.sample();
-      this.close();
-      if (!sample) {
-        state.status = "No location";
-        draw();
-        return;
-      }
-      state.lastFix = { lat: sample.latitude, lon: sample.longitude };
-      fetchNearby();
-    },
-    onError() {
-      state.locationPending = false;
-      this.close();
-      state.status = "No location";
-      draw();
-    }
-  });
-  state.locationPending = true;
-  location.configure({ enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
-}
-
+// The phone takes the location fix itself (navigator.geolocation in pkjs)
+// and answers with a display-ready rows list. In-flight guard: pull-to-
+// refresh (Up at the top of the list) must be a no-op while a request is
+// out — stacked cycles pin live memory (playbook §B).
 function fetchNearby() {
-  if (!state.lastFix) return requestLocationAndNearby();
+  if (state.nearbyPending) return;
+  state.nearbyPending = true;
   state.status = "Finding stops…";
   draw();
-  const favKeys = state.favorites.map(f => f.agency + ":" + f.code);
-  protocol.nearbyStops(state.lastFix.lat, state.lastFix.lon, favKeys)
+  protocol.nearbyStops(state.favorites.map(f => f.agency + ":" + f.code))
     .then(resp => {
-      state.nearby = resp.stops || [];
-      state.favStatus = new Map();
-      if (Array.isArray(resp.favs)) {
-        for (const f of resp.favs) {
-          state.favStatus.set(f.a + ":" + f.c, { dist: f.d, hasArr: f.h });
-        }
-      }
-      state.status = state.nearby.length ? "" : "No stops nearby";
+      state.nearbyPending = false;
+      state.rowsSrc = resp.rows || [];
+      state.status = state.rowsSrc.length ? "" : "No stops nearby";
       rebuildRows();
       draw();
     })
     .catch(err => {
+      state.nearbyPending = false;
       console.log("nearby failed: " + err.message);
       state.status = "Error: " + err.message;
       draw();
@@ -380,7 +353,7 @@ new Button({
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
-        else requestLocationAndNearby(); // already at top: pull to refresh
+        else fetchNearby(); // already at top: pull to refresh
       } else if (type === "down" && state.sel < state.rows.length - 1) {
         state.sel++; clampScroll(); draw();
       } else if (type === "select" && state.rows.length) {
@@ -410,17 +383,12 @@ protocol.onSettingsChanged = () => {
 };
 
 rebuildRows();
+state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
 draw();
 
-// Networking through the phone only works once PebbleKit JS is up.
-if (watch.connected.pebblekit) {
-  requestLocationAndNearby();
-} else {
-  state.status = "Waiting for phone…";
-  draw();
-  watch.addEventListener("connected", function onConn() {
-    if (watch.connected.pebblekit) {
-      requestLocationAndNearby();
-    }
-  });
-}
+// The first nearby fetch is driven by the phone: pkjs sends a
+// SettingsChanged ping from its "ready" handler (see src/pkjs/index.js),
+// which lands in protocol.onSettingsChanged above. Requesting at boot
+// instead would race pkjs startup — the watch boots first, the request
+// goes out before the phone JS is listening, and it vanishes into a 15 s
+// timeout. If the ping is ever lost, Up at the top of the list refreshes.
