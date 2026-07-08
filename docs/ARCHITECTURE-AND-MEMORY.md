@@ -66,6 +66,10 @@ from ~8192 to 32768.
 5. **The phone takes the location fix** (`navigator.geolocation` in pkjs).
    The watch's Location sensor and the `@moddable/pebbleproxy` are gone —
    they cost watch code/heap and the phone's GPS is the same fix anyway.
+   The phone also **owns the favorites list** (watch sends a "fav" toggle
+   request; the Clay page has per-favorite remove toggles), and favorites
+   beyond the configurable hide distance are left out of the response
+   entirely — no payload bytes, no arrival-check API calls.
 6. **Startup handshake:** the watch does *not* request at boot (it boots
    faster than the phone's JS and the request would vanish into a 15 s
    timeout). Instead pkjs sends `SettingsChanged: 1` from its `ready`

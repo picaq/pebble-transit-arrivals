@@ -29,8 +29,53 @@ var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
   agencies: ["SF", "BA", "AC", "GG", "SM"],
   radiusM: 500,
-  maxStops: 8
+  maxStops: 8,
+  hideFavKm: 19 // favorites farther than this are left out of the rows response (~12 mi)
 };
+
+/* -------------------------------------------------------------- favorites */
+
+// The phone owns the favorites list (the watch keeps nothing persistent —
+// watch code and storage cost watch heap, playbook §B). Managed from the
+// watch (Select on the arrivals screen → "fav" request) and from the Clay
+// settings page (each favorite gets a remove toggle).
+var FAVS_KEY = "favorites.v1";
+var MAX_FAVORITES = 10;
+
+function loadFavs() {
+  try {
+    var list = JSON.parse(localStorage.getItem(FAVS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveFavs(list) {
+  localStorage.setItem(FAVS_KEY, JSON.stringify(list.slice(0, MAX_FAVORITES)));
+}
+
+// One-time import of the legacy watch-side favorites list (the watch sends
+// its old favorites.v1 JSON with nearby requests until one succeeds).
+function importLegacyFavs(raw) {
+  var legacy;
+  try {
+    legacy = JSON.parse(raw);
+  } catch (e) {
+    return;
+  }
+  if (!Array.isArray(legacy)) return;
+  var favs = loadFavs();
+  var have = {};
+  favs.forEach(function (f) { have[f.agency + ":" + f.code] = 1; });
+  legacy.forEach(function (f) {
+    if (f && f.agency && f.code && !have[f.agency + ":" + f.code]) {
+      favs.push({ agency: String(f.agency), code: String(f.code), name: String(f.name || f.code) });
+    }
+  });
+  saveFavs(favs);
+  console.log("imported " + legacy.length + " legacy watch favorites");
+}
 
 function loadSettings() {
   try {
@@ -68,6 +113,31 @@ Pebble.addEventListener("showConfiguration", function () {
   clay.setSettings("AgencySM", s.agencies.indexOf("SM") >= 0);
   clay.setSettings("RadiusM", s.radiusM);
   clay.setSettings("MaxStops", s.maxStops);
+  clay.setSettings("HideFavKm", s.hideFavKm);
+
+  // Append a remove-toggle per saved favorite before the submit button.
+  // Clay serializes this.config at generateUrl() time, so rebuilding it per
+  // open keeps the section in sync with the current favorites list.
+  var favs = loadFavs();
+  var cfg = clayConfig.slice(0, clayConfig.length - 1);
+  if (favs.length) {
+    var items = [
+      { type: "heading", defaultValue: "Favorite stops" },
+      { type: "text", defaultValue: "Uncheck a stop and save to remove it." }
+    ];
+    favs.forEach(function (f) {
+      items.push({
+        type: "toggle",
+        messageKey: "Keep_" + f.agency + "_" + f.code,
+        label: f.name + " (" + f.agency + ")",
+        defaultValue: true
+      });
+    });
+    cfg.push({ type: "section", items: items });
+  }
+  cfg.push(clayConfig[clayConfig.length - 1]); // submit
+  clay.config = cfg;
+
   Pebble.openURL(clay.generateUrl());
 });
 
@@ -98,10 +168,21 @@ Pebble.addEventListener("webviewclosed", function (e) {
     apiKey: String(val("ApiKey", "")).trim(),
     agencies: agencies,
     radiusM: Number(val("RadiusM", 500)) || 500,
-    maxStops: Number(val("MaxStops", 8)) || 8
+    maxStops: Number(val("MaxStops", 8)) || 8,
+    hideFavKm: Number(val("HideFavKm", 19)) || 19
   };
   saveSettings(settings);
   console.log("settings saved: " + JSON.stringify(settings));
+
+  // Drop favorites whose remove-toggle was unchecked.
+  var favs = loadFavs();
+  var kept = favs.filter(function (f) {
+    return val("Keep_" + f.agency + "_" + f.code, true);
+  });
+  if (kept.length !== favs.length) {
+    saveFavs(kept);
+    console.log("favorites removed via settings: " + (favs.length - kept.length));
+  }
 
   // Nudge the watch so it can re-run its nearby search.
   Pebble.sendAppMessage({ SettingsChanged: 1 });
@@ -125,59 +206,46 @@ function respond(id, body) {
   );
 }
 
-// The watch sends its favorites as compact "AGENCY:code" strings; names are
-// resolved here from the cached stop lists (the watch fills any gaps from
-// its own saved names).
-function parseFavs(raw) {
-  if (!Array.isArray(raw)) return [];
-  var out = [];
-  for (var i = 0; i < raw.length && out.length < 10; i++) {
-    var s = String(raw[i]);
-    var idx = s.indexOf(":");
-    if (idx > 0) out.push({ agency: s.slice(0, idx), code: s.slice(idx + 1) });
-  }
-  return out;
-}
-
 function formatDistM(m) {
   if (m < 1000) return Math.round(m) + " m";
   return (m / 1000).toFixed(1) + " km";
 }
 
-// Favorites farther than this draw dimmed on the watch — keep in sync with
-// ARRIVAL_CHECK_MAX_M in transit511.js (12 miles).
-var FAR_M = 19312;
-
 // Build the display-ready rows list the watch renders verbatim: favorites
-// (nearest first, dimmed when far away or serviceless) followed by nearby
-// non-favorite stops. All formatting lives here because watch code costs
-// watch heap (docs/WATCH-DEBUGGING-PLAYBOOK.md §B).
+// (nearest first, dimmed when serviceless) followed by nearby non-favorite
+// stops. Favorites farther than settings.hideFavKm are left out entirely —
+// no payload bytes, no arrival-check API calls (they reappear when you get
+// closer, and stay editable on the settings page). All formatting lives
+// here because watch code costs watch heap (playbook §B).
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
-    var favs = parseFavs(req.favs);
+    var favs = loadFavs();
+    var hideM = (Number(settings.hideFavKm) || 19) * 1000;
 
     var finish = function (favStatus) {
-      var status = {}; // "AGENCY:code" -> {dist, hasArr}
+      var status = {}; // "AGENCY:code" -> {dist, name, hasArr}
       (favStatus || []).forEach(function (f) {
         status[f.agency + ":" + f.code] = f;
       });
 
-      var favRows = favs.map(function (f) {
+      var favRows = [];
+      favs.forEach(function (f) {
         var st = status[f.agency + ":" + f.code];
         var dist = st && st.dist >= 0 ? st.dist : undefined;
+        if (dist !== undefined && dist > hideM) return; // beyond the hide line
         var noArr = !!st && st.hasArr === 0;
-        // n omitted when the cache had no name — the watch substitutes its
-        // own saved favorite name.
         var row = {
-          a: f.agency, c: f.code, n: st && st.name,
+          a: f.agency, c: f.code,
+          n: (st && st.name) || f.name,
           s: f.agency +
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
             (noArr ? " · no arrivals" : ""),
+          f: 1,
           _d: dist === undefined ? 1e9 : dist
         };
-        if (noArr || (dist !== undefined && dist > FAR_M)) row.m = 1;
-        return row;
+        if (noArr) row.m = 1;
+        favRows.push(row);
       });
       favRows.sort(function (x, y) { return x._d - y._d; });
 
@@ -204,7 +272,7 @@ function buildRows(req, lat, lon, settings) {
     };
 
     if (!favs.length) return finish([]);
-    transit.getFavoriteStatus(favs, lat, lon, settings, function (fErr, favStatus) {
+    transit.getFavoriteStatus(favs, lat, lon, settings, hideM, function (fErr, favStatus) {
       finish(fErr ? [] : favStatus);
     });
   });
@@ -221,6 +289,7 @@ function handleRequest(req) {
   }
 
   if (req.cmd === "nearby") {
+    if (req.mig) importLegacyFavs(req.mig);
     console.log("req nearby: locating…");
     navigator.geolocation.getCurrentPosition(
       function (pos) {
@@ -237,6 +306,20 @@ function handleRequest(req) {
       if (err) return respond(req.id, { type: "error", message: err.message });
       respond(req.id, { type: "arrivals", stop: req.stop, arrivals: arrivals });
     });
+  } else if (req.cmd === "fav") {
+    var favs = loadFavs();
+    var key = String(req.a) + ":" + String(req.c);
+    var idx = -1;
+    for (var i = 0; i < favs.length; i++) {
+      if (favs[i].agency + ":" + favs[i].code === key) { idx = i; break; }
+    }
+    if (idx >= 0) {
+      favs.splice(idx, 1);
+    } else {
+      favs.unshift({ agency: String(req.a), code: String(req.c), name: String(req.n || req.c) });
+    }
+    saveFavs(favs);
+    respond(req.id, { type: "fav", fav: idx >= 0 ? 0 : 1 });
   } else {
     respond(req.id, { type: "error", message: "unknown cmd " + req.cmd });
   }

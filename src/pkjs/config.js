@@ -81,9 +81,24 @@ module.exports = [
         min: 3,
         max: 12,
         step: 1
+      },
+      {
+        type: "slider",
+        messageKey: "HideFavKm",
+        label: "Hide favorites beyond (km)",
+        description:
+          "Favorite stops farther away than this are left off the watch " +
+          "list (and cost no API calls) until you're near them again. " +
+          "They stay saved — see the Favorite stops section below.",
+        defaultValue: 19,
+        min: 1,
+        max: 100,
+        step: 1
       }
     ]
   },
+  // index.js appends a dynamic "Favorite stops" section (one remove-toggle
+  // per saved favorite) before the submit button when favorites exist.
   {
     type: "submit",
     defaultValue: "Save Settings"

@@ -21,13 +21,12 @@ Pebble's modern **Alloy** framework (no C required).
 ├── docs/ARCHITECTURE-AND-MEMORY.md ← why the watch is a thin client (READ ME)
 ├── docs/WATCH-DEBUGGING-PLAYBOOK.md ← crash debugging decision tree
 └── src/
-    ├── embeddedjs/           ← runs ON THE WATCH (UI, buttons, favorites)
+    ├── embeddedjs/           ← runs ON THE WATCH (UI and buttons only)
     │   ├── manifest.json     ← every watch module must be listed here
     │   ├── main.js           ← screens, rendering, button handling
-    │   ├── favorites.js      ← ★ favorites persisted in watch storage
     │   └── protocol.js       ← watch side of the watch↔phone protocol
-    └── pkjs/                 ← runs ON YOUR PHONE (network, settings)
-        ├── index.js          ← settings + geolocation + request router
+    └── pkjs/                 ← runs ON YOUR PHONE (everything else)
+        ├── index.js          ← settings + favorites + geolocation + router
         ├── config.js         ← settings page (Clay)
         └── transit511.js     ← 511.org client (nearby stops, arrivals)
 ```
@@ -198,12 +197,15 @@ foreground on the phone, or `pebble install` fails with
 | Select | Open stop's arrivals | ★ favorite / unfavorite the stop |
 | Back | Exit app | Return to stop list |
 
-Favorites appear at the top of the list with a ★ and persist on the watch,
-sorted nearest-first. A favorite that isn't useful right now draws dimmed
-(gray): either it's more than 12 miles away, or nothing is currently
-arriving there (its subtitle then says "no arrivals"). Checking arrivals
-costs one 511 request per nearby favorite, so results are cached for a few
-minutes — a stop that just went quiet can stay undimmed briefly.
+Favorites appear at the top of the list with a ★, sorted nearest-first.
+They are stored on the phone and can also be managed from the settings
+page (each favorite gets a remove toggle there). A favorite farther away
+than the "Hide favorites beyond" setting (default 19 km / ~12 mi) is left
+off the list entirely — it stays saved and reappears when you're near it
+again. A nearby favorite with nothing currently arriving draws dimmed
+(gray, subtitle "no arrivals"). Checking arrivals costs one 511 request
+per nearby favorite, so results are cached for a few minutes — a stop that
+just went quiet can stay undimmed briefly.
 
 ## Troubleshooting
 

@@ -11,21 +11,25 @@
  *   phone -> watch : { Response: "<json string>" }
  *
  * Request JSON:
- *   { id, cmd: "nearby",   favs: [{ a, c, n }, ...] }   // the watch's saved
- *                          // favorites (agency, code, name); the PHONE takes
- *                          // the location fix itself (navigator.geolocation)
+ *   { id, cmd: "nearby",   mig? }  // the PHONE owns favorites and takes the
+ *                          // location fix itself; mig is a one-time
+ *                          // migration payload (the watch's legacy
+ *                          // favorites.v1 JSON string), sent until a rows
+ *                          // response succeeds, then deleted
  *   { id, cmd: "arrivals", agency, stop }
+ *   { id, cmd: "fav",      a, c, n }   // toggle favorite (agency/code/name)
  * Response JSON:
- *   { id, type: "rows",     rows: [{ a, c, n, s, m? }] }
+ *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }] }
  *                           // One pre-merged, pre-sorted, display-ready list:
  *                           // favorites (nearest first) then nearby stops.
  *                           // a=agency, c=code, n=name (truncated),
  *                           // s=subtitle string ("SF · 320 m · no arrivals"),
- *                           // m=1 dimmed. The watch only fits text to the
- *                           // screen — all formatting happens on the phone to
- *                           // keep watch code (and therefore watch heap —
- *                           // see the playbook §B) small.
+ *                           // f=1 favorite, m=1 dimmed. The watch only fits
+ *                           // text to the screen — all formatting/merging
+ *                           // happens on the phone to keep watch code (and
+ *                           // therefore watch heap — playbook §B) small.
  *   { id, type: "arrivals", arrivals: [{ line, dest, min }] }
+ *   { id, type: "fav",      fav: 1|0 } // state after the toggle
  *   { id, type: "error",    message }
  *
  * Keep payloads SMALL (< ~1 KB). The phone side truncates names and caps
@@ -134,16 +138,24 @@ export const protocol = {
 
   /**
    * Ask the phone for the display-ready stop list (favorites + nearby). The
-   * phone takes the location fix itself. favs is the watch's saved favorites
-   * as [{ a, c, n }]. Resolves to { rows: [...] }.
+   * phone owns favorites and takes the location fix itself. mig, when given,
+   * is the legacy watch-side favorites JSON string for one-time import.
+   * Resolves to { rows: [...] }.
    */
-  nearbyStops(favs) {
-    return request({ cmd: "nearby", favs: favs || [] });
+  nearbyStops(mig) {
+    const body = { cmd: "nearby" };
+    if (mig) body.mig = mig;
+    return request(body);
   },
 
   /** Ask the phone for live arrivals at one stop. Resolves to { arrivals: [...] }. */
   arrivals(agency, stopCode) {
     return request({ cmd: "arrivals", agency, stop: stopCode });
+  },
+
+  /** Toggle a favorite on the phone. Resolves to { fav: 1|0 } (new state). */
+  toggleFav(agency, code, name) {
+    return request({ cmd: "fav", a: agency, c: code, n: name });
   }
 };
 

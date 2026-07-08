@@ -38,7 +38,7 @@ Rules that follow from this:
   under `"modules"` or you get a *runtime* module-not-found error:
 
   ```json
-  { "modules": { "*": ["./main", "./favorites", "./protocol"] } }
+  { "modules": { "*": ["./main", "./protocol"] } }
   ```
 
   If you add `src/embeddedjs/foo.js`, add `"./foo"` to that array. This is
@@ -148,11 +148,15 @@ before inventing a size.
 
 ## 7. Persistence
 
-- Watch: `localStorage` (strings only; `JSON.stringify` objects). Used here
-  for favorites (`favorites.js`). Also available: `device.keyValue` and
-  `device.files` for binary/large data.
-- Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`) and
-  the 7-day stop caches (`stops511.v1.<AGENCY>`).
+- Watch: `localStorage` exists (strings only) but **this app stores nothing
+  on the watch** — favorites moved to the phone (watch code/storage costs
+  watch heap, playbook §B); the watch only sends its legacy `favorites.v1`
+  once for migration, then deletes it. Also available: `device.keyValue`
+  and `device.files` for binary/large data.
+- Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
+  the favorites list (`favorites.v1` — [{agency, code, name}], capped 10,
+  edited from the watch's "fav" request and the Clay page's remove
+  toggles), and the 7-day stop caches (`stops511.v1.<AGENCY>`).
 - Always merge stored settings over defaults (spread pattern) so adding new
   settings fields never breaks old installs.
 

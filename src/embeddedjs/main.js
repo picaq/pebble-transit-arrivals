@@ -19,12 +19,12 @@ import Poco from "commodetto/Poco";
 import Button from "pebble/button";
 import Timer from "timer";
 import protocol from "./protocol";
-import { loadFavorites, isFavorite, toggleFavorite } from "./favorites";
 
 // NOTE ON CODE SIZE: this module's compiled bytecode loads into the same
 // 32 KB XS arena as the runtime heap (playbook §B) — keep the watch side
-// thin. Formatting, sorting, and merging happen on the PHONE (src/pkjs);
-// this file only draws rows, fits text to the screen, and handles buttons.
+// thin. Formatting, sorting, merging, and the favorites list live on the
+// PHONE (src/pkjs); this file only draws rows, fits text to the screen,
+// and handles buttons.
 
 /* ---------------------------------------------------------------- render */
 
@@ -83,7 +83,6 @@ const MODE_ARRIVALS = 1;
 const state = {
   mode: MODE_LIST,
   status: "Loading…",         // status line when a screen has no rows yet
-  favorites: loadFavorites(), // [{agency, code, name}]
   rows: [],                   // display rows currently shown
   sel: 0,                     // selected row index
   top: 0,                     // first visible row index (scroll window)
@@ -94,47 +93,25 @@ const state = {
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
   arrivalsStatus: "Loading…",
   refreshTimer: null,
-  nearbyPending: false        // in-flight guard — see fetchNearby()
+  nearbyPending: false,       // in-flight guard — see fetchNearby()
+  favPending: false           // in-flight guard for the favorite toggle
 };
 
 /* ------------------------------------------------------------------ list */
 
 // Rows arrive from the phone pre-merged (favorites first, nearest first),
-// pre-sorted, and with subtitles already formatted. Convert the parsed
-// response to display rows and let the payload tree be collected — an
-// earlier design retained it (state.rowsSrc) to re-derive ★ flags later,
-// which held ~2-3 KB of chunk heap hostage and made every warm refresh
-// crash "memory full" while parsing the next response beside it
-// (playbook §B). Text fitting happens lazily in draw() — fitVisibleRows().
+// pre-sorted, flagged, and with subtitles already formatted. Convert the
+// parsed response to display rows and let the payload tree be collected —
+// an earlier design retained it (state.rowsSrc), which held ~2-3 KB of
+// chunk heap hostage and made every warm refresh crash "memory full" while
+// parsing the next response beside it (playbook §B). Text fitting happens
+// lazily in draw() — fitVisibleRows().
 function setRowsFromResponse(list) {
-  const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
-  state.rows = list.map(r => {
-    let name = r.n; // phone omits n for favorites missing from its caches
-    if (name === undefined) {
-      const f = state.favorites.find(f => f.agency === r.a && f.code === r.c);
-      name = f ? f.name : r.c;
-    }
-    return {
-      agency: r.a, code: r.c, name, sub: r.s,
-      fav: favKeys.has(r.a + ":" + r.c), dim: !!r.m
-    };
-  });
+  state.rows = list.map(r => ({
+    agency: r.a, code: r.c, name: r.n, sub: r.s, fav: !!r.f, dim: !!r.m
+  }));
   if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
   clampScroll();
-}
-
-// Re-derive the ★ flag in place after the favorites list changes (toggle on
-// the arrivals screen). Allocates no new rows; a changed row just drops its
-// fitted title so draw() refits it with/without the star.
-function refreshFavFlags() {
-  const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
-  for (const row of state.rows) {
-    const fav = favKeys.has(row.agency + ":" + row.code);
-    if (fav !== row.fav) {
-      row.fav = fav;
-      row.title = undefined;
-    }
-  }
 }
 
 // Fit a row's text once; cached on the row, so steady-state draws allocate
@@ -257,6 +234,11 @@ function shortName(name) {
 
 /* ------------------------------------------------------------- data flow */
 
+// One-time migration: favorites used to live in watch localStorage. Send the
+// raw legacy JSON with nearby requests until one succeeds, then delete it —
+// after that the phone is the only owner of the favorites list.
+let migFavs = localStorage.getItem("favorites.v1");
+
 // The phone takes the location fix itself (navigator.geolocation in pkjs)
 // and answers with a display-ready rows list. In-flight guard: pull-to-
 // refresh (Up at the top of the list) must be a no-op while a request is
@@ -266,9 +248,13 @@ function fetchNearby() {
   state.nearbyPending = true;
   state.status = "Finding stops…";
   draw();
-  protocol.nearbyStops(state.favorites.map(f => f.agency + ":" + f.code))
+  protocol.nearbyStops(migFavs)
     .then(resp => {
       state.nearbyPending = false;
+      if (migFavs) {
+        migFavs = null;
+        localStorage.removeItem("favorites.v1");
+      }
       setRowsFromResponse(resp.rows || []);
       state.status = state.rows.length ? "" : "No stops nearby";
       draw();
@@ -285,7 +271,7 @@ function openArrivals(stop) {
   state.mode = MODE_ARRIVALS;
   state.stop = stop;
   state.stopTitle = shortName(stop.name);
-  state.stopIsFav = isFavorite(stop);
+  state.stopIsFav = stop.fav; // rows arrive flagged from the phone
   // Release the list rows' fitted text while this screen's refresh cycles
   // own the heap — draw() refits the visible rows on return. Frees ~1 KB
   // of chunk space on a heap that crashes over less (playbook §B).
@@ -349,8 +335,6 @@ function closeArrivals() {
   state.mode = MODE_LIST;
   state.stop = null;
   state.arrivals = [];
-  state.favorites = loadFavorites();
-  refreshFavFlags();
   draw();
 }
 
@@ -375,9 +359,22 @@ new Button({
         watch.exit();
       }
     } else {
-      if (type === "select" && state.stop) {
-        state.stopIsFav = toggleFavorite(state.stop);
-        draw(); // footer hint updates
+      if (type === "select" && state.stop && !state.favPending) {
+        // Favorites live on the phone; toggle there. In-flight guard so a
+        // mashed Select can't stack request cycles (playbook §B).
+        state.favPending = true;
+        const stop = state.stop;
+        protocol.toggleFav(stop.agency, stop.code, stop.name)
+          .then(resp => {
+            state.favPending = false;
+            stop.fav = !!resp.fav;
+            stop.title = undefined; // refit with/without the ★ on return
+            if (state.stop === stop) {
+              state.stopIsFav = stop.fav;
+              draw(); // footer hint updates
+            }
+          })
+          .catch(() => { state.favPending = false; });
       } else if (type === "back") {
         closeArrivals();
       } else if (type === "up" || type === "down") {
@@ -395,8 +392,6 @@ protocol.onSettingsChanged = () => {
   if (state.mode === MODE_LIST) fetchNearby();
 };
 
-// Before the first response: saved favorites with agency-only subtitles.
-state.rows = state.favorites.map(f => ({ ...f, sub: f.agency, fav: true, dim: false }));
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
 draw();
 

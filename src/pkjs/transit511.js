@@ -222,26 +222,26 @@ function findNearbyStops(lat, lon, settings, cb) {
 
 /* --------------------------------------------------------- favorite status */
 
-// The watch dims favorites that are too far away or have nothing arriving.
-// Distance comes free from the cached stop lists; "has arrivals" costs one
-// StopMonitoring request per favorite, so it is (a) skipped beyond
-// ARRIVAL_CHECK_MAX_M — those are dimmed for distance alone — and (b)
-// cached for a few minutes so repeated nearby refreshes stay inside the
-// 60 requests/hour budget.
-var ARRIVAL_CHECK_MAX_M = 19312; // 12 miles — keep in sync with FAR_METERS in src/embeddedjs/main.js
+// The list dims favorites that have nothing arriving. Distance comes free
+// from the cached stop lists; "has arrivals" costs one StopMonitoring
+// request per favorite, so it is (a) skipped beyond maxCheckM — the caller
+// hides those favorites entirely — and (b) cached for a few minutes so
+// repeated nearby refreshes stay inside the 60 requests/hour budget.
 var ARR_CACHE_TTL_MS = 3 * 60 * 1000;
 var arrivalCache = {}; // "AGENCY:code" -> { ts, hasArr }
 
 /**
- * Distance, name, and service status for the watch's favorite stops.
- * favs: [{ agency, code }] (≤ 10 — the watch caps favorites)
+ * Distance, name, and service status for the favorite stops.
+ * favs: [{ agency, code, name }] (≤ 10)
+ * maxCheckM: skip the (API-costing) arrival check for favorites farther
+ * than this — the caller drops them from the response anyway.
  * cb(null, [{ agency, code, dist, name?, hasArr? }]) — dist in meters, -1
- * when the stop can't be found; name comes from the cached stop list (absent
- * on a cache/API miss — the watch falls back to its saved name); hasArr only
- * present when it was actually checked.
+ * when the stop can't be found; name comes from the cached stop list
+ * (absent on a cache/API miss — the caller falls back to the saved name);
+ * hasArr only present when it was actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
  */
-function getFavoriteStatus(favs, lat, lon, settings, cb) {
+function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
   // Group by agency so each stop list is loaded (and its cache JSON-parsed)
   // once, not per favorite.
   var byAgency = {};
@@ -281,7 +281,7 @@ function getFavoriteStatus(favs, lat, lon, settings, cb) {
     var pending = [];
     for (var i = 0; i < entries.length; i++) {
       var entry = entries[i];
-      if (entry.dist < 0 || entry.dist > ARRIVAL_CHECK_MAX_M) continue;
+      if (entry.dist < 0 || entry.dist > maxCheckM) continue;
       var cached = arrivalCache[entry.agency + ":" + entry.code];
       if (cached && Date.now() - cached.ts < ARR_CACHE_TTL_MS) {
         entry.hasArr = cached.hasArr;
