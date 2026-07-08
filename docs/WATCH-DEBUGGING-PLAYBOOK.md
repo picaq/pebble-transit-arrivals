@@ -128,6 +128,15 @@ established on real hardware in this repo:
   allocation lands first faults, so the "cause" moves with every rebuild.
   Suspect this whenever a memory crash won't localize: run the gauge (§F)
   first — if free heap after imports is only a few KB, stop hunting leaks.
+- **Fifth recurrence (2026-07-07, same day): warm refreshes crashed while
+  boot survived.** The watch retained the parsed rows payload
+  (`state.rowsSrc`) to re-derive ★ flags later — ~2-3 KB of chunk heap
+  held permanently, so the *second* response of a session parsed beside
+  the first and tipped the heap. Boot always worked (nothing retained
+  yet), making it look intermittent. Rule: **the watch keeps only display
+  data; parsed payload trees must become garbage in the same handler that
+  received them.** Derived state that changes later (fav flags) is
+  updated in place on the display rows, not rebuilt from a kept payload.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in

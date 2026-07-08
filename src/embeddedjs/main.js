@@ -84,7 +84,6 @@ const state = {
   mode: MODE_LIST,
   status: "Loading…",         // status line when a screen has no rows yet
   favorites: loadFavorites(), // [{agency, code, name}]
-  rowsSrc: null,              // last rows payload from the phone, null before first response
   rows: [],                   // display rows currently shown
   sel: 0,                     // selected row index
   top: 0,                     // first visible row index (scroll window)
@@ -101,32 +100,41 @@ const state = {
 /* ------------------------------------------------------------------ list */
 
 // Rows arrive from the phone pre-merged (favorites first, nearest first),
-// pre-sorted, and with subtitles already formatted. This only re-derives the
-// ★ flag from the watch's own favorites (which can change between refreshes
-// via the toggle on the arrivals screen). Text fitting happens lazily in
-// draw() — see fitVisibleRows().
-function rebuildRows() {
-  let rows;
-  if (state.rowsSrc) {
-    const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
-    rows = state.rowsSrc.map(r => {
-      let name = r.n; // phone omits n for favorites missing from its caches
-      if (name === undefined) {
-        const f = state.favorites.find(f => f.agency === r.a && f.code === r.c);
-        name = f ? f.name : r.c;
-      }
-      return {
-        agency: r.a, code: r.c, name, sub: r.s,
-        fav: favKeys.has(r.a + ":" + r.c), dim: !!r.m
-      };
-    });
-  } else {
-    // Before the first response: saved favorites, agency-only subtitles.
-    rows = state.favorites.map(f => ({ ...f, sub: f.agency, fav: true, dim: false }));
-  }
-  state.rows = rows;
-  if (state.sel >= rows.length) state.sel = Math.max(0, rows.length - 1);
+// pre-sorted, and with subtitles already formatted. Convert the parsed
+// response to display rows and let the payload tree be collected — an
+// earlier design retained it (state.rowsSrc) to re-derive ★ flags later,
+// which held ~2-3 KB of chunk heap hostage and made every warm refresh
+// crash "memory full" while parsing the next response beside it
+// (playbook §B). Text fitting happens lazily in draw() — fitVisibleRows().
+function setRowsFromResponse(list) {
+  const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
+  state.rows = list.map(r => {
+    let name = r.n; // phone omits n for favorites missing from its caches
+    if (name === undefined) {
+      const f = state.favorites.find(f => f.agency === r.a && f.code === r.c);
+      name = f ? f.name : r.c;
+    }
+    return {
+      agency: r.a, code: r.c, name, sub: r.s,
+      fav: favKeys.has(r.a + ":" + r.c), dim: !!r.m
+    };
+  });
+  if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
   clampScroll();
+}
+
+// Re-derive the ★ flag in place after the favorites list changes (toggle on
+// the arrivals screen). Allocates no new rows; a changed row just drops its
+// fitted title so draw() refits it with/without the star.
+function refreshFavFlags() {
+  const favKeys = new Set(state.favorites.map(f => f.agency + ":" + f.code));
+  for (const row of state.rows) {
+    const fav = favKeys.has(row.agency + ":" + row.code);
+    if (fav !== row.fav) {
+      row.fav = fav;
+      row.title = undefined;
+    }
+  }
 }
 
 // Fit a row's text once; cached on the row, so steady-state draws allocate
@@ -166,9 +174,8 @@ function drawHeader(title) {
 // allocation fails from fragmentation despite free space existing elsewhere
 // — a real "Alloy: Fatal Error / memory full" seen in testing. Binary search
 // still allocates a substring per probe, but O(log n) instead of O(n).
-// Even that wasn't enough when called from draw() (the crash recurred), so
-// this now runs only when data changes (rebuildRows/prepareArrivals) — never
-// call it from the render path.
+// Called only from draw(), inside begin()/end(), at most once per row —
+// results are cached on the row (see fitVisibleRows / the arrivals loop).
 function ellipsize(str, font, maxWidth) {
   if (render.getTextWidth(str, font) <= maxWidth) return str;
   const budget = maxWidth - render.getTextWidth("…", font);
@@ -262,9 +269,8 @@ function fetchNearby() {
   protocol.nearbyStops(state.favorites.map(f => f.agency + ":" + f.code))
     .then(resp => {
       state.nearbyPending = false;
-      state.rowsSrc = resp.rows || [];
-      state.status = state.rowsSrc.length ? "" : "No stops nearby";
-      rebuildRows();
+      setRowsFromResponse(resp.rows || []);
+      state.status = state.rows.length ? "" : "No stops nearby";
       draw();
     })
     .catch(err => {
@@ -280,6 +286,13 @@ function openArrivals(stop) {
   state.stop = stop;
   state.stopTitle = shortName(stop.name);
   state.stopIsFav = isFavorite(stop);
+  // Release the list rows' fitted text while this screen's refresh cycles
+  // own the heap — draw() refits the visible rows on return. Frees ~1 KB
+  // of chunk space on a heap that crashes over less (playbook §B).
+  for (const row of state.rows) {
+    row.title = undefined;
+    row.subtitle = undefined;
+  }
   state.arrivals = [];
   // Reset the guard so a still-in-flight request for a previous stop can't
   // block this screen's first fetch (its late response is ignored by the
@@ -337,7 +350,7 @@ function closeArrivals() {
   state.stop = null;
   state.arrivals = [];
   state.favorites = loadFavorites();
-  rebuildRows();
+  refreshFavFlags();
   draw();
 }
 
@@ -382,7 +395,8 @@ protocol.onSettingsChanged = () => {
   if (state.mode === MODE_LIST) fetchNearby();
 };
 
-rebuildRows();
+// Before the first response: saved favorites with agency-only subtitles.
+state.rows = state.favorites.map(f => ({ ...f, sub: f.agency, fav: true, dim: false }));
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
 draw();
 
