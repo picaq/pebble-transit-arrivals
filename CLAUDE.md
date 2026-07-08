@@ -215,17 +215,29 @@ Hard rules (evidence and details live in the playbook):
   family/size pair), *not* a rendering bug. `Alloy: Fatal Error / memory
   full` = XS allocator failure, and on this watch it has fired from heap
   **fragmentation caused by allocation churn in the `draw()` path** with
-  >50% of the heap free — audit churn before hunting leaks.
+  >50% of the heap free — audit churn before hunting leaks. App exits
+  straight to the watchface at launch with no error = `moddable_
+  createMachine` rejected the creation record (playbook §B).
   `fetch_watch_info` timeouts = toolchain/environment, never app code.
+- **The VM is one 32 KB arena and compiled JS bytecode loads into it** —
+  every byte of `src/embeddedjs/` code costs ~a byte of runtime heap
+  (playbook §B). Before hunting any memory bug, measure headroom
+  (instrumentation flag or gauge, playbook §F); at near-zero headroom the
+  crash site moves with every rebuild and localization is meaningless.
+  `src/c/mdbl.c` requests larger heaps, honored only on watch firmware
+  ≥ v4.21.0.
 - **Two-fix rule.** If a crash survives two targeted fixes, stop
   hypothesizing and bisect from a known-good commit on real hardware
   (playbook §D, or the `/bisect-watch-crash` skill). Pin the exact repro
-  (which stop, how many refreshes/scrolls) before fixing anything.
+  (which stop, how many refreshes/scrolls) before fixing anything. For
+  launch crashes the loop is autonomous: `pebble install` auto-launches,
+  then `pebble screenshot` shows crash vs alive (playbook §F).
 - **Signals that lie:** `pebble build`'s RAM report (static, uninformative);
-  watch-side `console.log` (never surfaces via `pebble logs` — silence
-  proves nothing; draw diagnostics on screen instead, playbook §F); total
-  free heap at crash time; the `emery` emulator (broken in SDK 4.17, see
-  below).
+  watch-side `console.log` (never surfaces via `pebble logs` — but XS
+  **instrumentation** does: `kModdableCreationFlagLogInstrumentation` in
+  mdbl.c + `pebble logs --phone` streams chunk/slot/stack usage and the
+  fxAbort line, playbook §F); total free heap at crash time; the `emery`
+  emulator (broken in SDK 4.17, see below).
 - If you learn a new crash pattern or invalidate one, **update the playbook
   in the same change.**
 
@@ -272,6 +284,10 @@ restarting the phone (a human step — ask the user).
     (`state.locationPending`, `state.arrivalsPending`) so button-mashing
     can't stack concurrent cycles — stacked in-flight requests pin live
     memory and have crashed the watch with "memory full" (playbook §B).
+13. Grew `src/embeddedjs/` meaningfully? Bytecode loads into the same
+    32 KB VM arena as the heap (72 KB with mdbl.c's creation record on
+    firmware ≥ v4.21.0) — confirm heap headroom on hardware via the
+    instrumentation log line (playbook §F) before declaring done.
 
 ## 13. Key documentation URLs (fetch these, don't guess)
 

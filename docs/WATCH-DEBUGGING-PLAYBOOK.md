@@ -113,6 +113,33 @@ established on real hardware in this repo:
   first report said "list screen while scrolling"; the precise trigger
   ("pressing Down too much *within a stop*") pointed at a completely
   different code path. Get the exact screen and button before theorizing.
+- **The underlying reason all of the above kept recurring: the XS VM is a
+  single 32 KB arena, and your compiled JS code lives inside it.** Fourth
+  recurrence (2026-07-07, instant "memory full" ~0.5 s after launch, on
+  processing the first nearby response): measured with the allocation-gauge
+  technique (§F), the app had **3,328 bytes** of free heap right after
+  imports and <1 KB after boot. The firmware default VM is one 32 KB arena
+  shared by stack + slots + chunks, and the mod archive (`mc.xsa` bytecode,
+  ~13 KB for this app) is loaded into that same arena — deleting the app
+  body freed heap byte-for-byte (measured: −8.5 KB bytecode → +6.9 KB
+  heap). **Every byte of embedded JS you write costs ~a byte of runtime
+  heap.** This is why plausible runtime fixes (lazy fitting, in-frame
+  measurement, smaller bursts) changed nothing: at ~0 headroom, whichever
+  allocation lands first faults, so the "cause" moves with every rebuild.
+  Suspect this whenever a memory crash won't localize: run the gauge (§F)
+  first — if free heap after imports is only a few KB, stop hunting leaks.
+- **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
+  `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
+  firmware source (`src/fw/applib/moddable/moddable.c` in
+  coredevices/pebbleos): if any of the three is nonzero, **all three must
+  be nonzero**, else the machine is silently never created and the app
+  exits to the watchface at launch with no error. If the sum exceeds 32 KB
+  the heaps are allocated separately from the ~122 KB emery app heap with
+  growth disabled. **Requires watch firmware ≥ v4.21.0** (2026-07-03):
+  older firmware has a shadowed-variable bug that silently ignores the
+  sizes and uses the 32 KB default (fixed in commit `76cd732`); the
+  `flags` field works on all versions. On old firmware the only lever is
+  shrinking embedded code.
 
 Debugging order:
 
@@ -201,6 +228,7 @@ The `/bisect-watch-crash` skill walks this interactively; the procedure:
 | Signal | Why it lies |
 |---|---|
 | `pebble build`'s "Free RAM available" report | Never changed across builds regardless of code added. Uninformative for any memory bug. |
+| A memory crash "moving" between rebuilds | At near-zero headroom (see §B, 32 KB arena), whichever allocation lands first faults — the crash site shifts with any code change, including your fix attempts. Measure headroom (§F) before trusting any localization. |
 | Watch-side `console.log` via `pebble logs` | Never surfaces in this SDK. Absence of output carries zero information. Phone-side (pkjs) logs *do* surface. |
 | Total heap free at crash time | "memory full" fires from fragmentation with >50% free. |
 | The `emery` emulator | Broken (§C). Its failures say nothing about your code. |
@@ -212,6 +240,31 @@ The `/bisect-watch-crash` skill walks this interactively; the procedure:
 
 Since watch `console.log` is invisible:
 
+- **XS instrumentation over `pebble logs` (best memory tool).** In
+  `src/c/mdbl.c`, pass `kModdableCreationFlagLogInstrumentation` in the
+  `ModdableCreationRecord` flags (already done in this repo; the firmware
+  auto-disables it when no log listener is attached, so it's free to leave
+  on). Then `pebble logs --phone <IP>` streams per-sample lines with Chunk
+  used/available, Slot used/available, Stack used/available, App bytes
+  free, GC count, modules loaded — and at a crash you get the literal
+  `fxAbort memory full` line plus the firmware heap report. Start `pebble
+  logs` in the background *before* `pebble install` so you catch launch.
+- **localStorage crash markers (find the crash site).** Write a phase
+  marker (`localStorage.setItem("diag", "resp 14 stops")`) before each
+  step of the suspect path; after the crash, install a tiny reader build
+  (same UUID keeps localStorage) that draws
+  `localStorage.getItem("diag")`. The last marker written is where it
+  died. Found the fourth §B recurrence's crash site in two rounds.
+- **Allocation gauge (measure free heap without instrumentation).** At the
+  point of interest, loop `hold.push(new ArrayBuffer(256))` writing a
+  progress marker each iteration; the allocator abort ends the run and the
+  persisted marker *is* the headroom measurement. One number per run, but
+  needs nothing from the host.
+- **Autonomous repro loop for launch crashes.** `pebble install` auto-
+  launches the app, so `install && sleep 6 && pebble screenshot` verifies
+  a launch crash (or its absence) with no human on the watch — this made
+  an 8-round bisection and A/B experiments cheap. Scroll/button repros
+  still need human hands.
 - **Draw diagnostics on screen.** Keep a small `debugLines` array, render it
   with a known-good font (Gothic-Regular 14) from `draw()`, and confirm with
   `pebble screenshot`. Wrap suspect init in try/catch and surface
@@ -245,6 +298,12 @@ Beyond CLAUDE.md §11:
 - Every user-triggerable request path (button-driven refreshes included) has
   an in-flight guard, and protocol.js's `MAX_PENDING` backstop stays in
   place — mashed buttons must produce no-ops, not stacked request cycles.
+- **Embedded JS code size is runtime heap.** The mod bytecode loads into
+  the same VM arena the heap lives in (§B). Keep `src/embeddedjs/` lean;
+  after growing it meaningfully, re-run the §F gauge (or check the
+  instrumentation "App bytes free" / chunk numbers) to confirm headroom.
+  With firmware ≥ v4.21.0 the `mdbl.c` creation record buys ~72 KB of VM,
+  but don't treat that as license to bloat — older firmware gets 32 KB.
 - Test on **real hardware** before declaring memory/render changes done —
   the emulator situation (§C) means emulator-only testing proves little for
   emery-specific behavior, and memory-churn bugs need real session-length
