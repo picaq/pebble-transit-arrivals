@@ -209,6 +209,12 @@ other environment setup gotchas (missing `wscript`/`src/c` scaffolding,
 `pebble` command in this directory — a placeholder value crashes
 `pebble-tool`'s analytics step on every invocation.
 
+Machine/device-specific state — the phone's dev IP, the watch's firmware
+version (which decides whether mdbl.c's heap request works), leftover
+debug installs — lives in `LOCAL-NOTES.md` at the repo root (git-ignored,
+like `localSecrets.js`). Read it before connecting to hardware; keep it
+updated, dated, and out of committed files.
+
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 

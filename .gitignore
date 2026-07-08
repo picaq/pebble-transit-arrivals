@@ -7,3 +7,4 @@ dist/
 src/pkjs/localSecrets.js
 .lock-waf_linux_build
 .claude/settings.local.json
+LOCAL-NOTES.md
