@@ -16,9 +16,43 @@ var clayConfig = require("./config");
 var transit = require("./transit511");
 var localSecrets = require("./localSecrets");
 
+// Runs INSIDE the Clay settings webview (serialized by Clay). Its only job:
+// a confirmation dialog when any 🗑 delete toggle is on at save time.
+// Defensive try/catch throughout — if anything about Clay's DOM changes,
+// deletion degrades to working without a dialog rather than breaking the
+// page.
+function clayCustomFn() {
+  var clayConfig = this;
+  clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function () {
+    try {
+      var btn = document.querySelector('button[type="submit"]') ||
+        document.querySelector(".button--submit");
+      if (!btn) return;
+      btn.addEventListener("click", function (e) {
+        try {
+          var doomed = [];
+          var items = clayConfig.getAllItems();
+          for (var i = 0; i < items.length; i++) {
+            var cfg = items[i].config || {};
+            if (cfg.messageKey && cfg.messageKey.indexOf("Del_") === 0 && items[i].get()) {
+              doomed.push(cfg.label || cfg.messageKey);
+            }
+          }
+          if (doomed.length && !window.confirm(
+            "Permanently delete " + doomed.length + " favorite stop(s)?\n\n" +
+            doomed.join("\n"))) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        } catch (err) { /* fall through: save proceeds without a dialog */ }
+      }, true);
+    } catch (err) { /* ignore */ }
+  });
+}
+
 // autoHandleEvents:false — we intercept webviewclosed so settings stay on
 // the phone instead of being pushed to the watch key-by-key.
-var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+var clay = new Clay(clayConfig, clayCustomFn, { autoHandleEvents: false });
 
 var SETTINGS_KEY = "settings.v1";
 
@@ -40,7 +74,9 @@ var DEFAULT_SETTINGS = {
 // watch (Select on the arrivals screen → "fav" request) and from the Clay
 // settings page (each favorite gets a remove toggle).
 var FAVS_KEY = "favorites.v1";
-var MAX_FAVORITES = 10;
+// Storage cap, not a display cap — unfavoriting hides rather than deletes,
+// so hidden records accumulate here until trashed from the settings page.
+var MAX_FAVORITES = 20;
 
 function loadFavs() {
   try {
@@ -126,9 +162,8 @@ Pebble.addEventListener("showConfiguration", function () {
       {
         type: "text",
         defaultValue:
-          "Toggle whether a favorite appears on the watch. Hidden " +
-          "favorites stay saved here; to delete one for good, unfavorite " +
-          "it on the watch (Select on its arrivals screen)."
+          "Toggle whether a favorite appears on the watch (unfavoriting " +
+          "on the watch does the same thing — nothing is deleted either way)."
       }
     ];
     favs.forEach(function (f) {
@@ -137,6 +172,20 @@ Pebble.addEventListener("showConfiguration", function () {
         messageKey: "Show_" + f.agency + "_" + f.code,
         label: f.name + " (" + f.agency + ")",
         defaultValue: !f.hide
+      });
+    });
+    items.push({
+      type: "text",
+      defaultValue:
+        "To delete a stop permanently, check its 🗑 toggle below and save " +
+        "(you'll be asked to confirm)."
+    });
+    favs.forEach(function (f) {
+      items.push({
+        type: "toggle",
+        messageKey: "Del_" + f.agency + "_" + f.code,
+        label: "🗑 " + f.name + " (" + f.agency + ")",
+        defaultValue: false
       });
     });
     cfg.push({ type: "section", items: items });
@@ -180,11 +229,14 @@ Pebble.addEventListener("webviewclosed", function (e) {
   saveSettings(settings);
   console.log("settings saved: " + JSON.stringify(settings));
 
-  // Apply the show/hide toggles — hiding keeps the favorite saved, it just
-  // stops appearing on the watch (deletion happens on the watch instead).
+  // Deletions first (🗑 toggles, confirmed in the webview), then apply the
+  // show/hide toggles to what's left. Hiding keeps the favorite saved.
   var favs = loadFavs();
-  var changed = 0;
-  favs.forEach(function (f) {
+  var kept = favs.filter(function (f) {
+    return !val("Del_" + f.agency + "_" + f.code, false);
+  });
+  var changed = favs.length - kept.length;
+  kept.forEach(function (f) {
     var hide = !val("Show_" + f.agency + "_" + f.code, !f.hide);
     if (hide !== !!f.hide) {
       if (hide) f.hide = 1;
@@ -193,8 +245,8 @@ Pebble.addEventListener("webviewclosed", function (e) {
     }
   });
   if (changed) {
-    saveFavs(favs);
-    console.log("favorite visibility changed via settings: " + changed);
+    saveFavs(kept);
+    console.log("favorites changed via settings: " + changed);
   }
 
   // Nudge the watch so it can re-run its nearby search.
@@ -247,12 +299,11 @@ function dirLinesSuffix(info) {
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
-    var allFavs = loadFavs();
-    // Hidden favorites (settings-page toggle) cost nothing: no status
-    // lookups, no payload. They stay in the exclusion set below, though, so
-    // the stop vanishes from the watch entirely rather than reappearing as
-    // an unstarred nearby stop.
-    var favs = allFavs.filter(function (f) { return !f.hide; });
+    // Hidden favorites cost nothing: no status lookups, no payload, no spot
+    // in the favorites block. Their stop can still show up as an ordinary
+    // unstarred nearby row when physically close (favKeys below uses only
+    // visible favorites) — starring it there unhides it.
+    var favs = loadFavs().filter(function (f) { return !f.hide; });
     var hideM = (Number(settings.hideFavKm) || 19) * 1000;
 
     var assemble = function (favStatus, infoByAgency) {
@@ -285,7 +336,7 @@ function buildRows(req, lat, lon, settings) {
       favRows.sort(function (x, y) { return x._d - y._d; });
 
       var favKeys = {};
-      allFavs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
+      favs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
       var rows = favRows.map(function (r) { delete r._d; return r; });
       stops.forEach(function (s) {
         if (favKeys[s.agency + ":" + s.code]) return;
@@ -369,19 +420,29 @@ function handleRequest(req) {
       respond(req.id, { type: "arrivals", stop: req.stop, arrivals: arrivals });
     });
   } else if (req.cmd === "fav") {
+    // The watch's Select toggles VISIBILITY, never deletes: unfavoriting
+    // hides the saved record (star it again — even via its unstarred
+    // nearby row — and it comes back). Deletion is settings-page only
+    // (trash toggles + confirmation).
     var favs = loadFavs();
     var key = String(req.a) + ":" + String(req.c);
-    var idx = -1;
+    var fav = null;
     for (var i = 0; i < favs.length; i++) {
-      if (favs[i].agency + ":" + favs[i].code === key) { idx = i; break; }
+      if (favs[i].agency + ":" + favs[i].code === key) { fav = favs[i]; break; }
     }
-    if (idx >= 0) {
-      favs.splice(idx, 1);
-    } else {
+    var nowFav;
+    if (!fav) {
       favs.unshift({ agency: String(req.a), code: String(req.c), name: String(req.n || req.c) });
+      nowFav = 1;
+    } else if (fav.hide) {
+      delete fav.hide;
+      nowFav = 1;
+    } else {
+      fav.hide = 1;
+      nowFav = 0;
     }
     saveFavs(favs);
-    respond(req.id, { type: "fav", fav: idx >= 0 ? 0 : 1 });
+    respond(req.id, { type: "fav", fav: nowFav });
   } else {
     respond(req.id, { type: "error", message: "unknown cmd " + req.cmd });
   }

@@ -105,7 +105,7 @@ changes belong on the phone, not the watch (thin-client rule).
 |---|---|---|
 | Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search) | Manual refresh |
 | Down | Move selection down | Manual refresh |
-| Select | Open arrivals for highlighted stop | Toggle ★ favorite — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
+| Select | Open arrivals for highlighted stop | Toggle ★ favorite **visibility** (never deletes) — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
 | Back | Exit app (`watch.exit()`) | Return to list |
 
 Actions fire on press (`down === true`), releases ignored. Because
@@ -137,19 +137,22 @@ longer cache degrades freshness less than you'd expect.
 ## 8. Favorites (owned by the PHONE)
 
 Favorites live in phone localStorage (`favorites.v1` —
-`[{agency, code, name, hide?}]`), not on the watch. Managed two ways:
-Select on the watch's arrivals screen adds/deletes (a `fav` protocol
-request), and per-favorite **show/hide toggles** on the Clay settings page
-(hiding keeps the favorite saved; a hidden favorite's stop disappears from
-the watch entirely — it doesn't reappear as an unstarred nearby stop).
+`[{agency, code, name, hide?}]`), not on the watch. **Star toggles are
+visibility, never deletion**: Select on the watch's arrivals screen and
+the settings page's show/hide toggles both flip the `hide` flag (a brand
+new star creates the record). A hidden favorite's stop can still appear
+as an ordinary unstarred nearby row when physically close — starring it
+there unhides it. Deletion is settings-page only: per-favorite 🗑
+toggles, confirmed by a dialog at save time (`clayCustomFn`).
 
 | Behavior | Value | Where |
 |---|---|---|
-| Max favorites | 10 | `MAX_FAVORITES`, `index.js:43` |
-| Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — reappears when near; (b) its settings-page toggle is off (`hide` flag). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
+| Max favorites stored | 20 (storage cap — hidden records accumulate until trashed) | `MAX_FAVORITES`, `index.js` |
+| Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — reappears when near; (b) `hide` flag (watch unstar or settings toggle). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
+| Delete a favorite | settings page 🗑 toggle + save; `window.confirm` dialog in the webview (degrades to no-dialog if Clay's DOM changes — see `clayCustomFn`) | `showConfiguration` / `webviewclosed`, `index.js` |
 | Dim a favorite | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map — no per-favorite API calls | `buildRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
-| New favorite position | added to the front of the saved list | `fav` handler, `index.js:309-322` |
-| One-time migration | the watch sends its legacy watch-side `favorites.v1` JSON with nearby requests (`mig` field) until one succeeds, then deletes it | `main.js:240`, `importLegacyFavs()` in `index.js` |
+| New favorite position | added to the front of the saved list | `fav` handler, `index.js` |
+| One-time migration | the watch sends its legacy watch-side `favorites.v1` JSON with nearby requests (`mig` field) until one succeeds, then deletes it | `main.js`, `importLegacyFavs()` in `index.js` |
 
 ## 9. List content & caps
 
@@ -184,7 +187,7 @@ phone-side caps raises payload size — re-check the 700 B budget in §9.
 | `radiusM` | 500 | Nearby search radius |
 | `maxStops` | 8 | Soft cap, see §9 |
 | `hideFavKm` | 19 (slider 1–100) | Favorites beyond this are left off the watch list, see §8 |
-| Favorite stops section | dynamic | One `Show_<agency>_<code>` show/hide toggle per saved favorite (sets/clears the `hide` flag; deletion happens on the watch), appended before the submit button each time the page opens (`showConfiguration`) |
+| Favorite stops section | dynamic | Per saved favorite: a `Show_<agency>_<code>` show/hide toggle (sets/clears `hide`) plus a `Del_<agency>_<code>` 🗑 delete toggle (confirmed at save). Appended before the submit button each time the page opens (`showConfiguration`) |
 
 Settings live on the phone only; the watch just gets a `SettingsChanged`
 ping and re-runs the nearby search. To add one: `config.js` field →

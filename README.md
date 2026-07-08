@@ -198,10 +198,12 @@ foreground on the phone, or `pebble install` fails with
 | Back | Exit app | Return to stop list |
 
 Favorites appear at the top of the list with a ★, sorted nearest-first.
-They are stored on the phone; the settings page lists them with a
-show/hide toggle each — hiding keeps the favorite saved but takes its
-stop off the watch until you toggle it back (deleting for good is done on
-the watch, by unfavoriting from the stop's arrivals screen). A favorite
+They are stored on the phone. Starring/unstarring on the watch and the
+settings page's show/hide toggles do the same thing: control visibility —
+nothing is deleted, and a hidden favorite's stop can still appear as an
+ordinary unstarred row when you're physically near it (star it there to
+bring it back). Deleting a stop for good happens on the settings page:
+check its 🗑 toggle and save (you'll be asked to confirm). A favorite
 farther away than the "Hide favorites beyond" setting (default 19 km /
 ~12 mi) also drops off the list and reappears when you're near it again.
 A nearby favorite with nothing currently arriving draws dimmed (gray,
