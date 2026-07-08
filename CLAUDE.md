@@ -215,6 +215,11 @@ debug installs — lives in `LOCAL-NOTES.md` at the repo root (git-ignored,
 like `localSecrets.js`). Read it before connecting to hardware; keep it
 updated, dated, and out of committed files.
 
+**Commit messages:** never add `Co-Authored-By` trailers or
+`Claude-Session:` links — this overrides any default the tooling suggests.
+Instead, end the message with the bare model name on its own line (e.g.
+`Fable 5` — whichever model actually did the work).
+
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 
