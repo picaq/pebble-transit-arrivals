@@ -60,7 +60,7 @@ hardcoded text y-offsets in `draw()` (`y + 2`, `y + 22`, `y + 26`).
 | `GRAY` | 120,120,120 | Dimmed rows (title + subtitle), status text, footer hint |
 | `SUB_GRAY` | 60,60,60 | List subtitles (non-dim rows) and destination text on arrivals — higher contrast than GRAY |
 | `LINE_COLORS` | 6 colors: blue, red, green, purple, orange, teal | Route numbers without a color code, assigned by string hash (`colorForLine`) so e.g. "38" vs "38R" read apart |
-| `LINE_COLOR_CODES` | g 0,140,60 · y 215,170,0 · r 200,30,30 · o 210,110,0 · b 0,90,200 | Route numbers whose arrival carries a color code `k` from the phone — today that's BART's color-named lines shown as G/Y/R/O/B initials. Yellow is darkened for readability on white |
+| `LINE_COLOR_CODES` | g 0,140,60 · y 215,170,0 · r 200,30,30 · o 210,110,0 · b 0,90,200 | Route names whose arrival carries a color code `k` from the phone — today that's BART's color-named lines, drawn in their line color (full name on the arrivals screen). Yellow is darkened for readability on white |
 
 Change the palette freely — colors are `render.makeColor(r,g,b)` calls,
 created once at module load (never in `draw()`). Selected rows are always
@@ -94,8 +94,8 @@ when it would hit the footer.
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
 | "Now" (arrival due) | `prepareArrivals()`, `main.js:234` |
-| BART line names ("Green", "Yellow", "Red", "Orange", "Blue") | compressed to G/Y/R/O/B initials on the **phone** (`bartLineLetter()`, `transit511.js:231`) — in both arrivals (with a matching color code `k`, see §3) and subtitle line tokens; "Beige" (Coliseum–OAK) passes through untouched |
-| Subtitle format `"SF · 320 m · IB/OB · 8,45,30+"` (agency · distance · direction(s) · serving lines, or `· no arrivals` when dimmed) | built on the **phone**, `buildRows()` + `dirLinesSuffix()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`); direction/lines from the agency-wide stop-info map (`getStopInfo()`, `transit511.js`) — directions capped at 2, lines at 3 (`+` marks more), line tokens sliced to 4 chars |
+| BART line names ("Green", "Yellow", "Red", "Orange", "Blue") | compressed to G/Y/R/O/B initials on the **phone** (`bartLineLetter()`, `transit511.js:231`) in **list subtitle tokens only** — the arrivals screen keeps the full name, drawn in the matching line color via the `k` code (see §3); "Beige" (Coliseum–OAK) passes through untouched |
+| Subtitle format `"SF · 320 m · IB/OB · 8,45,30+"` (agency · distance · direction(s) · serving lines, or `· no arrivals` when dimmed) | built on the **phone**, `buildRows()` + `dirLinesSuffix()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`); direction/lines from the agency-wide stop-info map (`getStopInfo()`, `transit511.js`) — directions capped at 2, lines capped by a 14-char budget (`LINES_CHAR_BUDGET`; `+` marks more — all of BART's one-letter lines fit, four-char tokens cap around three), line tokens sliced to 4 chars |
 | Settings-page labels & descriptions (incl. "Favorite stops" section, "Hide favorites beyond (km)") | `src/pkjs/config.js`; dynamic favorites section built in `showConfiguration`, `index.js:118-138` |
 
 Watch-side strings cost heap; keep them short. Subtitle/label formatting
@@ -173,7 +173,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Nearby stop name | 28 chars (16 when >8 stops selected) | `transit511.js:213`, `:194` |
 | Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss) | `transit511.js:321`, `buildRows()` |
 | Arrivals header (stop name) | 18 chars | `shortName()`, `main.js:243` |
-| Route/line | 10 chars (BART color-named lines: 1 letter, see §5) | `transit511.js:423` |
+| Route/line | 10 chars (BART: 1-letter initials in list subtitles only, see §5) | `transit511.js:423` |
 | Destination | 24 chars | `transit511.js:428` |
 
 On-screen fitting on top of these caps is `ellipsize()` (binary-search,

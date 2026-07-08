@@ -60,9 +60,9 @@ function colorForLine(line) {
 }
 
 // The phone may attach a color code ("k") to an arrival when the line has a
-// canonical color — e.g. BART's color-named lines arrive as "G"/"Y"/"R"/"O"/"B"
-// with a matching code. Unknown/absent codes fall back to the hash above.
-// Yellow is darkened so it stays readable on the white background.
+// canonical color — e.g. BART's color-named lines ("Yellow" → k="y") keep
+// their full name but draw in it. Unknown/absent codes fall back to the hash
+// above. Yellow is darkened so it stays readable on the white background.
 const LINE_COLOR_CODES = {
   g: render.makeColor(0, 140, 60),
   y: render.makeColor(215, 170, 0),

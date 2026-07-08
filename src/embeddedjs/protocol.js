@@ -31,7 +31,7 @@
  *   { id, type: "arrivals", arrivals: [{ line, dest, min, k? }] }
  *                           // k = optional display-color code for lines with
  *                           // a canonical color (BART's color-named lines
- *                           // arrive as "G"/"Y"/"R"/"O"/"B" with k="g".."b");
+ *                           // keep their full name and send k="g".."b");
  *                           // the watch maps it to its palette
  *                           // (LINE_COLOR_CODES, main.js)
  *   { id, type: "fav",      fav: 1|0 } // state after the toggle

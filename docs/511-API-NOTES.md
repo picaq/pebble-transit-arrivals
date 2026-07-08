@@ -61,7 +61,8 @@ also included in this feed.
 ("38R", "J"), while **BART names its lines by color** — "Green", "Yellow",
 "Red", "Orange", "Blue", plus "Beige" for the Coliseum–OAK shuttle.
 `transit511.js` compresses the five color-named BART lines to their initial
-letter (with a display-color code for the watch, `bartLineLetter()`).
+letter in list-subtitle tokens and attaches a display-color code for the
+watch; arrivals keep the full name (`bartLineLetter()`).
 
 ## Other available endpoints (not used yet, useful for features)
 

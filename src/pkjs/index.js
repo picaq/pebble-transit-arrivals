@@ -277,13 +277,24 @@ function formatDistM(m) {
 }
 
 // " · N · 8,14,49+" from an agency stop-info entry (directions capped at 2,
-// lines at 3 — subtitle space on the watch is one ellipsized line).
+// lines capped by a character budget rather than a count — BART's one-letter
+// lines all fit ("Y,R,B,G"), four-char route tokens cap around three —
+// subtitle space on the watch is one ellipsized line).
+var LINES_CHAR_BUDGET = 14;
 function dirLinesSuffix(info) {
   if (!info) return "";
   var s = "";
   if (info.dirs.length) s += " · " + info.dirs.slice(0, 2).join("/");
   if (info.lines.length) {
-    s += " · " + info.lines.slice(0, 3).join(",") + (info.lines.length > 3 ? "+" : "");
+    var lines = "";
+    var i = 0;
+    while (i < info.lines.length) {
+      var next = lines ? lines + "," + info.lines[i] : info.lines[i];
+      if (next.length > LINES_CHAR_BUDGET) break;
+      lines = next;
+      i++;
+    }
+    s += " · " + lines + (i < info.lines.length ? "+" : "");
   }
   return s;
 }

@@ -226,8 +226,8 @@ function findNearbyStops(lat, lon, settings, cb) {
 
 // BART (BA) names its lines by color: LineRef is "Green", "Yellow", "Red",
 // "Orange", "Blue" (plus "Beige" for the Coliseum–OAK shuttle, left as-is).
-// Compress to the capital initial so five arrivals fit the watch, and let
-// the caller attach a matching display-color code for the watch's palette.
+// The initial letter compresses list-subtitle tokens ("Y,R,B,G") and keys
+// the matching display color; the arrivals screen keeps the full name.
 function bartLineLetter(line) {
   var m = /^(green|yellow|red|orange|blue)/i.exec(line);
   return m ? m[1].charAt(0).toUpperCase() : null;
@@ -429,13 +429,12 @@ function getArrivals(agency, stopCode, apiKey, cb) {
         when: now + ms
       };
       if (agency === "BA") {
-        // Color-named BART lines: single letter + matching color code the
-        // watch maps to its palette (LINE_COLOR_CODES in main.js).
+        // Color-named BART lines keep their full name on the arrivals
+        // screen but carry a matching color code the watch maps to its
+        // palette (LINE_COLOR_CODES in main.js). The one-letter compression
+        // applies only to list subtitles (getStopInfo).
         var letter = bartLineLetter(entry.line);
-        if (letter) {
-          entry.line = letter;
-          entry.k = letter.toLowerCase();
-        }
+        if (letter) entry.k = letter.toLowerCase();
       }
       list.push(entry);
     }
