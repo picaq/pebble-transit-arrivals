@@ -217,6 +217,9 @@ https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 Hours have been lost in this repo fixing plausible-but-wrong causes of
 crashes. Before debugging **any** watch-side crash, blank screen, or memory
 error, read `docs/WATCH-DEBUGGING-PLAYBOOK.md` and follow its decision tree.
+Background on the memory model, the thin-client architecture rules, the
+crash history, and the instrumentation-log column key lives in
+`docs/ARCHITECTURE-AND-MEMORY.md`.
 Hard rules (evidence and details live in the playbook):
 
 - **Classify first.** Blank screen after a successful install = uncaught

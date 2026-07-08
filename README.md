@@ -18,6 +18,8 @@ Pebble's modern **Alloy** framework (no C required).
 ├── CLAUDE.md                 ← hand this to Claude when developing
 ├── package.json              ← app manifest (name, UUID, message keys)
 ├── docs/511-API-NOTES.md     ← transit API reference & quirks
+├── docs/ARCHITECTURE-AND-MEMORY.md ← why the watch is a thin client (READ ME)
+├── docs/WATCH-DEBUGGING-PLAYBOOK.md ← crash debugging decision tree
 └── src/
     ├── embeddedjs/           ← runs ON THE WATCH (UI, buttons, favorites)
     │   ├── manifest.json     ← every watch module must be listed here
@@ -29,6 +31,13 @@ Pebble's modern **Alloy** framework (no C required).
         ├── config.js         ← settings page (Clay)
         └── transit511.js     ← 511.org client (nearby stops, arrivals)
 ```
+
+**Why is the watch side so small?** The watch's JS VM gets 32 KB for
+*everything* — including the app's own compiled code — so the watch only
+draws and handles buttons, while the phone does location, networking,
+sorting, and formatting. The full story (including the firmware update
+that will eventually lift the limit, and how to watch live memory numbers
+with `pebble logs`) is in **docs/ARCHITECTURE-AND-MEMORY.md**.
 
 ## Human-initiated tasks (do these once)
 

@@ -249,6 +249,8 @@ Since watch `console.log` is invisible:
   free, GC count, modules loaded — and at a crash you get the literal
   `fxAbort memory full` line plus the firmware heap report. Start `pebble
   logs` in the background *before* `pebble install` so you catch launch.
+  Column-by-column key for the `instruments:` line, plus known-healthy
+  reference numbers: `docs/ARCHITECTURE-AND-MEMORY.md`.
 - **localStorage crash markers (find the crash site).** Write a phase
   marker (`localStorage.setItem("diag", "resp 14 stops")`) before each
   step of the suspect path; after the crash, install a tiny reader build
