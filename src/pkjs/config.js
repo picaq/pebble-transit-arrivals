@@ -67,7 +67,7 @@ module.exports = [
         label: "Search radius (meters)",
         defaultValue: 500,
         min: 100,
-        max: 2000,
+        max: 4000,
         step: 100
       },
       {
