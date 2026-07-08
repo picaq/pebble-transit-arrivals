@@ -50,23 +50,24 @@ numbers), Droid — **only specific sizes exist per family** (constraint 2
 above). If you grow a font, re-check the row-height metrics in §4 and the
 hardcoded text y-offsets in `draw()` (`y + 2`, `y + 22`, `y + 26`).
 
-## 3. Colors (`src/embeddedjs/main.js:39-54`)
+## 3. Colors (`src/embeddedjs/main.js:39-72`)
 
 | Constant | RGB | Used for |
 |---|---|---|
 | `BLACK` | 0,0,0 | Row titles, minutes numbers |
 | `WHITE` | 255,255,255 | Screen background; text on accent |
 | `ACCENT` | 0,85,255 (blue) | Header bar, selected-row highlight |
-| `GRAY` | 120,120,120 | Subtitles, dimmed rows, status text, footer hint |
-| `DIR_GRAY` | 60,60,60 | Destination text on arrivals (higher contrast than GRAY) |
-| `LINE_COLORS` | 6 colors: blue, red, green, purple, orange, teal | Route numbers, assigned by string hash (`colorForLine`) so e.g. "38" vs "38R" read apart |
+| `GRAY` | 120,120,120 | Dimmed rows (title + subtitle), status text, footer hint |
+| `SUB_GRAY` | 60,60,60 | List subtitles (non-dim rows) and destination text on arrivals — higher contrast than GRAY |
+| `LINE_COLORS` | 6 colors: blue, red, green, purple, orange, teal | Route numbers without a color code, assigned by string hash (`colorForLine`) so e.g. "38" vs "38R" read apart |
+| `LINE_COLOR_CODES` | g 0,140,60 · y 215,170,0 · r 200,30,30 · o 210,110,0 · b 0,90,200 | Route numbers whose arrival carries a color code `k` from the phone — today that's BART's color-named lines shown as G/Y/R/O/B initials. Yellow is darkened for readability on white |
 
 Change the palette freely — colors are `render.makeColor(r,g,b)` calls,
 created once at module load (never in `draw()`). Selected rows are always
 white-on-ACCENT regardless of dim state, so keep ACCENT dark enough for
 white text.
 
-## 4. Layout metrics (`src/embeddedjs/main.js:62-74`)
+## 4. Layout metrics (`src/embeddedjs/main.js:74-86`)
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -88,18 +89,19 @@ when it would hit the footer.
 
 | Text | Where |
 |---|---|
-| Header title "Transit Glance" | `draw()`, `main.js:174` |
-| "★ favorited — Select to remove" / "Select to ★ favorite" | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js:75-76` |
+| Header title "Transit Glance" | `draw()`, `main.js:186` |
+| "★ favorited — Select to remove" / "Select to ★ favorite" | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js:87-88` |
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
-| "Now" (arrival due) | `prepareArrivals()`, `main.js:222` |
+| "Now" (arrival due) | `prepareArrivals()`, `main.js:234` |
+| BART line names ("Green", "Yellow", "Red", "Orange", "Blue") | compressed to G/Y/R/O/B initials on the **phone** (`bartLineLetter()`, `transit511.js:231`) — in both arrivals (with a matching color code `k`, see §3) and subtitle line tokens; "Beige" (Coliseum–OAK) passes through untouched |
 | Subtitle format `"SF · 320 m · IB/OB · 8,45,30+"` (agency · distance · direction(s) · serving lines, or `· no arrivals` when dimmed) | built on the **phone**, `buildRows()` + `dirLinesSuffix()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`); direction/lines from the agency-wide stop-info map (`getStopInfo()`, `transit511.js`) — directions capped at 2, lines at 3 (`+` marks more), line tokens sliced to 4 chars |
 | Settings-page labels & descriptions (incl. "Favorite stops" section, "Hide favorites beyond (km)") | `src/pkjs/config.js`; dynamic favorites section built in `showConfiguration`, `index.js:118-138` |
 
 Watch-side strings cost heap; keep them short. Subtitle/label formatting
 changes belong on the phone, not the watch (thin-client rule).
 
-## 6. Button behavior (`src/embeddedjs/main.js:346-388`)
+## 6. Button behavior (`src/embeddedjs/main.js:358-397`)
 
 | Button | LIST screen | ARRIVALS screen |
 |---|---|---|
@@ -119,9 +121,9 @@ has crashed the watch (CLAUDE.md §12 item 12).
 
 | Behavior | Value | Where |
 |---|---|---|
-| Arrivals auto-refresh while screen open | 60 s | `Timer.repeat` in `openArrivals()`, `main.js:293` |
-| Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:318` |
-| Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js` — one StopMonitoring call per agency, no stopcode |
+| Arrivals auto-refresh while screen open | 60 s | `Timer.repeat` in `openArrivals()`, `main.js:305` |
+| Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:367` |
+| Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js:244` — one StopMonitoring call per agency, no stopcode |
 | Stop-list cache | 7 days | `STOP_CACHE_TTL_MS`, `transit511.js:38` |
 | Watch request timeout | 15 s | `REQUEST_TIMEOUT_MS`, `protocol.js:48` |
 | Phone HTTP timeout | 20 s | `getJSON()`, `transit511.js:45` |
@@ -162,21 +164,21 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14 | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js:149-170` |
 | Search radius | `radiusM` setting, default 500 m | settings, `index.js:31` |
 | Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js` |
-| Arrivals per stop | max 6 | parse loop, `transit511.js:362` |
+| Arrivals per stop | max 6 | parse loop, `transit511.js:413` |
 
 ## 10. Text truncation lengths
 
 | Text | Cap | Where |
 |---|---|---|
 | Nearby stop name | 28 chars (16 when >8 stops selected) | `transit511.js:213`, `:194` |
-| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss) | `transit511.js:266`, `buildRows()` |
-| Arrivals header (stop name) | 18 chars | `shortName()`, `main.js:231` |
-| Route/line | 10 chars | `transit511.js:372` |
-| Destination | 24 chars | `transit511.js:377` |
+| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss) | `transit511.js:321`, `buildRows()` |
+| Arrivals header (stop name) | 18 chars | `shortName()`, `main.js:243` |
+| Route/line | 10 chars (BART color-named lines: 1 letter, see §5) | `transit511.js:423` |
+| Destination | 24 chars | `transit511.js:428` |
 
 On-screen fitting on top of these caps is `ellipsize()` (binary-search,
 called only inside `begin()/end()`, results cached per row). Raising the
-phone-side caps raises payload size — re-check the 700 B budget in §9.
+phone-side caps raises payload size — re-check the 880 B budget in §9.
 
 ## 11. Settings (Clay — `src/pkjs/config.js`, defaults `index.js:28-34`)
 
@@ -193,7 +195,7 @@ Settings live on the phone only; the watch just gets a `SettingsChanged`
 ping and re-runs the nearby search. To add one: `config.js` field →
 `webviewclosed` reader → `DEFAULT_SETTINGS` (CLAUDE.md §8).
 
-## 12. Startup behavior (`main.js:385-395`)
+## 12. Startup behavior (`main.js:401-407`)
 
 - Before the first response the list is empty with status "Connecting…"
   (or "Waiting for phone…" if pebblekit isn't connected) — the watch keeps

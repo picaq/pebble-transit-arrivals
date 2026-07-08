@@ -57,6 +57,12 @@ array), and `MonitoredCall` with `ExpectedArrivalTime` /
 `ExpectedDepartureTime` / `Aimed*` ISO timestamps. Cancelled-trip info is
 also included in this feed.
 
+`LineRef` values are agency-specific: Muni/AC use route numbers/letters
+("38R", "J"), while **BART names its lines by color** — "Green", "Yellow",
+"Red", "Orange", "Blue", plus "Beige" for the Coliseum–OAK shuttle.
+`transit511.js` compresses the five color-named BART lines to their initial
+letter (with a display-color code for the watch, `bartLineLetter()`).
+
 ## Other available endpoints (not used yet, useful for features)
 
 - `/transit/VehicleMonitoring?agency=` — live vehicle positions.

@@ -222,6 +222,17 @@ function findNearbyStops(lat, lon, settings, cb) {
 
 /* --------------------------------------------------------- favorite status */
 
+/* ------------------------------------------------------- BART line names */
+
+// BART (BA) names its lines by color: LineRef is "Green", "Yellow", "Red",
+// "Orange", "Blue" (plus "Beige" for the Coliseum–OAK shuttle, left as-is).
+// Compress to the capital initial so five arrivals fit the watch, and let
+// the caller attach a matching display-color code for the watch's palette.
+function bartLineLetter(line) {
+  var m = /^(green|yellow|red|orange|blue)/i.exec(line);
+  return m ? m[1].charAt(0).toUpperCase() : null;
+}
+
 /* ------------------------------------------------------ agency stop info */
 
 // One agency-wide StopMonitoring call (no stopcode) answers, for every stop
@@ -262,7 +273,9 @@ function getStopInfo(agency, apiKey, cb) {
       var e = map[code] || (map[code] = { dirs: [], lines: [] });
       var dir = String(mvj.DirectionRef || "");
       if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
-      var line = String(mvj.LineRef || "").slice(0, 4);
+      var line = String(mvj.LineRef || "");
+      if (agency === "BA") line = bartLineLetter(line) || line;
+      line = line.slice(0, 4);
       if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
     }
     stopInfoCache[agency] = { ts: Date.now(), map: map };
@@ -360,11 +373,13 @@ function serveArrivals(list) {
   for (var i = 0; i < list.length; i++) {
     var ms = list[i].when - now;
     if (ms < -60000) continue; // already gone
-    out.push({
+    var a = {
       line: list[i].line,
       dest: list[i].dest,
       min: Math.max(0, Math.round(ms / 60000))
-    });
+    };
+    if (list[i].k) a.k = list[i].k; // display-color code (see getArrivals)
+    out.push(a);
   }
   out.sort(function (a, b) { return a.min - b.min; });
   return out;
@@ -404,7 +419,7 @@ function getArrivals(agency, stopCode, apiKey, cb) {
       if (!when) continue;
       var ms = Date.parse(when) - now;
       if (ms < -60000) continue; // already gone
-      list.push({
+      var entry = {
         line: String(mvj.LineRef || mvj.PublishedLineName || "?").slice(0, 10),
         dest: String(
           (Array.isArray(mvj.DestinationName)
@@ -412,7 +427,17 @@ function getArrivals(agency, stopCode, apiKey, cb) {
             : mvj.DestinationName) || ""
         ).slice(0, 24),
         when: now + ms
-      });
+      };
+      if (agency === "BA") {
+        // Color-named BART lines: single letter + matching color code the
+        // watch maps to its palette (LINE_COLOR_CODES in main.js).
+        var letter = bartLineLetter(entry.line);
+        if (letter) {
+          entry.line = letter;
+          entry.k = letter.toLowerCase();
+        }
+      }
+      list.push(entry);
     }
     fullArrivalsCache[cacheKey] = { ts: now, list: list };
     cb(null, serveArrivals(list));

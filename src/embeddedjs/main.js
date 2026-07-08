@@ -40,7 +40,7 @@ const BLACK = render.makeColor(0, 0, 0);
 const WHITE = render.makeColor(255, 255, 255);
 const ACCENT = render.makeColor(0, 85, 255);   // header / selection
 const GRAY = render.makeColor(120, 120, 120);
-const DIR_GRAY = render.makeColor(60, 60, 60); // destination text — higher contrast than GRAY
+const SUB_GRAY = render.makeColor(60, 60, 60); // subtitles/destination text — higher contrast than GRAY
 
 // Distinguishable colors cycled across route lines so easily-confused
 // numbers (e.g. "38" vs "38R") read apart at a glance.
@@ -58,6 +58,18 @@ function colorForLine(line) {
   for (let i = 0; i < line.length; i++) hash = (hash * 31 + line.charCodeAt(i)) | 0;
   return LINE_COLORS[Math.abs(hash) % LINE_COLORS.length];
 }
+
+// The phone may attach a color code ("k") to an arrival when the line has a
+// canonical color — e.g. BART's color-named lines arrive as "G"/"Y"/"R"/"O"/"B"
+// with a matching code. Unknown/absent codes fall back to the hash above.
+// Yellow is darkened so it stays readable on the white background.
+const LINE_COLOR_CODES = {
+  g: render.makeColor(0, 140, 60),
+  y: render.makeColor(215, 170, 0),
+  r: render.makeColor(200, 30, 30),
+  o: render.makeColor(210, 110, 0),
+  b: render.makeColor(0, 90, 200)
+};
 
 const HEADER_H = 28;
 const ROW_H = 40;
@@ -182,10 +194,10 @@ function draw() {
         const y = HEADER_H + i * ROW_H;
         const selected = idx === state.sel;
         if (selected) render.fillRectangle(ACCENT, 0, y, render.width, ROW_H);
-        // Dimmed rows (favorite too far away / nothing arriving) go gray;
+        // Dimmed rows (favorite with nothing arriving) go gray;
         // selection stays white-on-accent so it's always readable.
         const fg = selected ? WHITE : row.dim ? GRAY : BLACK;
-        const sub = selected ? WHITE : GRAY;
+        const sub = selected ? WHITE : row.dim ? GRAY : SUB_GRAY;
         render.drawText(row.title, fontRow, fg, 6, y + 2);
         render.drawText(row.subtitle, fontSub, sub, 6, y + 22);
       }
@@ -205,7 +217,7 @@ function draw() {
         }
         render.drawText(a.minStr, a.minFont, BLACK, 6, y);
         render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
-        render.drawText(a.destText, fontSub, DIR_GRAY, ARRIVAL_TEXT_X, y + 26);
+        render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
       }
     }
@@ -223,7 +235,7 @@ function prepareArrivals(list) {
   for (const a of list) {
     a.minStr = a.min <= 0 ? "Now" : String(a.min);
     a.minFont = a.min <= 0 ? fontNow : fontBig;
-    a.lineColor = colorForLine(a.line);
+    a.lineColor = (a.k && LINE_COLOR_CODES[a.k]) || colorForLine(a.line);
   }
   return list;
 }

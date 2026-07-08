@@ -139,7 +139,7 @@ before inventing a size.
   would race pkjs startup and vanish. pkjs sends `SettingsChanged: 1` from
   its `ready` handler; the watch's `protocol.onSettingsChanged` runs the
   first nearby fetch. Keep this when touching either side.
-- Payload discipline: JSON strings under ~700 B for the rows response (the
+- Payload discipline: JSON strings under ~880 B for the rows response (the
   watch parses it with only a few KB of chunk-heap slack on 32 KB-arena
   firmware — playbook §B), ~1 KB elsewhere. Truncate names, cap list
   lengths, shed farthest stops first. If you need more, add chunking
