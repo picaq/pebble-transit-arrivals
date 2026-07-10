@@ -136,6 +136,38 @@ function saveSettings(settings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
+/* ------------------------------------------------------------- rows cache */
+
+// Stale-while-revalidate: the last computed rows list is persisted so the
+// watch can render a list the instant it asks (even at cold app launch),
+// before any geolocation or network work runs. A non-fresh "nearby" request
+// is answered immediately from this cache with stale:1; the watch shows it,
+// then fires exactly one fresh:1 follow-up that does the real compute and
+// replaces the list. Only the normal (non-widened) list is cached so a
+// launch never flashes an expanded list and then shrinks (see req.x).
+var ROWS_CACHE_KEY = "rows.v1";
+// Don't serve a stale list older than this — past it you may be somewhere
+// else entirely, so eat the compute rather than flash a wrong location.
+var ROWS_STALE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+
+function loadRowsCache() {
+  try {
+    var e = JSON.parse(localStorage.getItem(ROWS_CACHE_KEY) || "null");
+    if (!e || !e.rows || Date.now() - e.ts > ROWS_STALE_TTL_MS) return null;
+    return e.rows;
+  } catch (x) {
+    return null;
+  }
+}
+
+function saveRowsCache(rows) {
+  try {
+    localStorage.setItem(ROWS_CACHE_KEY, JSON.stringify({ ts: Date.now(), rows: rows }));
+  } catch (x) {
+    // Quota — carry on; the watch just waits for the fresh compute.
+  }
+}
+
 /* ------------------------------------------------------------------ Clay */
 
 Pebble.addEventListener("showConfiguration", function () {
@@ -371,6 +403,10 @@ function buildRows(req, lat, lon, settings) {
       while (JSON.stringify(body).length > 880 && rows.length > favRows.length) {
         rows.pop();
       }
+      // Persist the normal list for instant stale-while-revalidate replies.
+      // Widened lists (Down "load more", req.x) are not cached so a later
+      // cold launch doesn't flash an expanded list and then shrink.
+      if (!req.x) saveRowsCache(rows);
       respond(req.id, body);
     };
 
@@ -385,14 +421,19 @@ function buildRows(req, lat, lon, settings) {
       });
       var infoByAgency = {};
       var list = Object.keys(agSet);
-      (function next() {
-        if (!list.length) return assemble(favStatus, infoByAgency);
-        var ag = list.shift();
+      var remaining = list.length;
+      if (!remaining) return assemble(favStatus, infoByAgency);
+      // Fire all agencies' stop-info calls concurrently. Sequential was the
+      // main field latency — N agency-wide StopMonitoring round-trips back to
+      // back before any rows could be sent. Each is cached 10 min
+      // (transit511.js), so warm agencies return at once and the whole
+      // fan-out costs about one round-trip instead of N.
+      list.forEach(function (ag) {
         transit.getStopInfo(ag, settings.apiKey, function (e, map) {
           if (!e) infoByAgency[ag] = map;
-          next();
+          if (--remaining === 0) assemble(favStatus, infoByAgency);
         });
-      })();
+      });
     };
 
     if (!favs.length) return withInfo([]);
@@ -413,11 +454,32 @@ function handleRequest(req) {
   }
 
   if (req.cmd === "nearby") {
+    // Instant stale reply: answer a plain (non-fresh, non-widened) request
+    // from the persisted list with no geolocation or network work, then let
+    // the watch revalidate with a fresh:1 follow-up (see rows cache above).
+    if (!req.fresh && !req.x) {
+      var cachedRows = loadRowsCache();
+      if (cachedRows) {
+        console.log("req nearby: served stale (" + cachedRows.length + " rows)");
+        return respond(req.id, { type: "rows", rows: cachedRows, stale: 1 });
+      }
+    }
     if (req.mig) importLegacyFavs(req.mig);
-    console.log("req nearby: locating…");
+    // Down "load more" (req.x) widens the search: each step adds radius (and a
+    // couple of soft-cap slots). The 880 B payload / HARD_STOP_CEILING caps
+    // still bound the list, so widening mainly surfaces farther stops where
+    // few are nearby — exactly the "nothing close, look further" case.
+    var effSettings = settings;
+    if (req.x) {
+      effSettings = {};
+      for (var sk in settings) effSettings[sk] = settings[sk];
+      effSettings.radiusM = settings.radiusM + Number(req.x) * 500;
+      effSettings.maxStops = settings.maxStops + Number(req.x) * 2;
+    }
+    console.log("req nearby: locating…" + (req.x ? " (widen " + req.x + ")" : ""));
     navigator.geolocation.getCurrentPosition(
       function (pos) {
-        buildRows(req, pos.coords.latitude, pos.coords.longitude, settings);
+        buildRows(req, pos.coords.latitude, pos.coords.longitude, effSettings);
       },
       function (geoErr) {
         console.log("geolocation failed: " + (geoErr && geoErr.message));
@@ -426,7 +488,7 @@ function handleRequest(req) {
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 }
     );
   } else if (req.cmd === "arrivals") {
-    transit.getArrivals(req.agency, req.stop, settings.apiKey, function (err, arrivals) {
+    transit.getArrivals(req.agency, req.stop, settings.apiKey, req.lim || 6, function (err, arrivals) {
       if (err) return respond(req.id, { type: "error", message: err.message });
       respond(req.id, { type: "arrivals", stop: req.stop, arrivals: arrivals });
     });

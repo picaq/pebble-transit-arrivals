@@ -338,9 +338,14 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
       if (entry.dist >= 0 && entry.dist <= maxCheckM) checkAgencies[entry.agency] = 1;
     });
     var list = Object.keys(checkAgencies);
-    (function nextInfo() {
-      if (!list.length) return cb(null, entries);
-      var agency = list.shift();
+    var remaining = list.length;
+    if (!remaining) return cb(null, entries);
+    // Fire every agency's stop-info call at once rather than serially — the
+    // sequential version put one network round-trip per agency on the nearby
+    // critical path (the main field-latency source; see index.js withInfo).
+    // Each call is cached 10 min (getStopInfo), so warm agencies return
+    // immediately and the whole fan-out costs ~one round-trip.
+    list.forEach(function (agency) {
       getStopInfo(agency, settings.apiKey, function (err, map) {
         if (!err) {
           entries.forEach(function (entry) {
@@ -349,9 +354,9 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
             }
           });
         }
-        nextInfo();
+        if (--remaining === 0) cb(null, entries);
       });
-    })();
+    });
   }
 }
 
@@ -385,10 +390,16 @@ function serveArrivals(list) {
   return out;
 }
 
-function getArrivals(agency, stopCode, apiKey, cb) {
+// limit: how many arrivals to return (watch "load more" raises it). Bounded
+// to keep the AppMessage payload under the watch's ~1 KB parse budget.
+var MAX_ARRIVALS = 10;
+function getArrivals(agency, stopCode, apiKey, limit, cb) {
+  limit = Math.max(1, Math.min(MAX_ARRIVALS, limit || 6));
   var cacheKey = agency + ":" + stopCode;
   var cached = fullArrivalsCache[cacheKey];
-  if (cached && Date.now() - cached.ts < ARRIVALS_TTL_MS) {
+  // Reuse the cache only if it holds at least as many as now requested (a
+  // "load more" asks for more than the last fetch stored).
+  if (cached && Date.now() - cached.ts < ARRIVALS_TTL_MS && cached.lim >= limit) {
     return cb(null, serveArrivals(cached.list));
   }
 
@@ -410,7 +421,7 @@ function getArrivals(agency, stopCode, apiKey, cb) {
 
     var now = Date.now();
     var list = [];
-    for (var i = 0; i < visits.length && list.length < 6; i++) {
+    for (var i = 0; i < visits.length && list.length < limit; i++) {
       var mvj = visits[i] && visits[i].MonitoredVehicleJourney;
       if (!mvj) continue;
       var call = mvj.MonitoredCall || {};
@@ -438,7 +449,7 @@ function getArrivals(agency, stopCode, apiKey, cb) {
       }
       list.push(entry);
     }
-    fullArrivalsCache[cacheKey] = { ts: now, list: list };
+    fullArrivalsCache[cacheKey] = { ts: now, lim: limit, list: list };
     cb(null, serveArrivals(list));
   });
 }

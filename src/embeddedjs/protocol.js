@@ -11,15 +11,19 @@
  *   phone -> watch : { Response: "<json string>" }
  *
  * Request JSON:
- *   { id, cmd: "nearby",   mig? }  // the PHONE owns favorites and takes the
- *                          // location fix itself; mig is a one-time
- *                          // migration payload (the watch's legacy
- *                          // favorites.v1 JSON string), sent until a rows
- *                          // response succeeds, then deleted
- *   { id, cmd: "arrivals", agency, stop }
+ *   { id, cmd: "nearby",   mig?, fresh?, x? }
+ *                          // the PHONE owns favorites and takes the location
+ *                          // fix itself; mig is a one-time migration payload
+ *                          // (the watch's legacy favorites.v1 JSON string),
+ *                          // sent until a rows response succeeds, then
+ *                          // deleted. fresh=1 bypasses the phone's instant
+ *                          // stale reply (the revalidation follow-up). x=N
+ *                          // widens the search radius N steps ("load more").
+ *   { id, cmd: "arrivals", agency, stop, lim? }  // lim = how many arrivals to
+ *                          // return (watch "load more"; phone caps it)
  *   { id, cmd: "fav",      a, c, n }   // toggle favorite (agency/code/name)
  * Response JSON:
- *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }] }
+ *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }], stale? }
  *                           // One pre-merged, pre-sorted, display-ready list:
  *                           // favorites (nearest first) then nearby stops.
  *                           // a=agency, c=code, n=name (truncated),
@@ -28,6 +32,8 @@
  *                           // text to the screen — all formatting/merging
  *                           // happens on the phone to keep watch code (and
  *                           // therefore watch heap — playbook §B) small.
+ *                           // stale=1 marks the instant cached list — the
+ *                           // watch shows it, then sends one fresh:1 request.
  *   { id, type: "arrivals", arrivals: [{ line, dest, min, k? }] }
  *                           // k = optional display-color code for lines with
  *                           // a canonical color (BART's color-named lines
@@ -147,15 +153,22 @@ export const protocol = {
    * is the legacy watch-side favorites JSON string for one-time import.
    * Resolves to { rows: [...] }.
    */
-  nearbyStops(mig) {
+  nearbyStops(mig, fresh, expand) {
     const body = { cmd: "nearby" };
     if (mig) body.mig = mig;
+    if (fresh) body.fresh = 1;   // bypass the phone's instant stale reply
+    if (expand) body.x = expand; // "load more": widen the search radius N steps
     return request(body);
   },
 
-  /** Ask the phone for live arrivals at one stop. Resolves to { arrivals: [...] }. */
-  arrivals(agency, stopCode) {
-    return request({ cmd: "arrivals", agency, stop: stopCode });
+  /**
+   * Ask the phone for live arrivals at one stop. limit raises how many the
+   * phone returns (watch "load more"). Resolves to { arrivals: [...] }.
+   */
+  arrivals(agency, stopCode, limit) {
+    const body = { cmd: "arrivals", agency, stop: stopCode };
+    if (limit) body.lim = limit;
+    return request(body);
   },
 
   /** Toggle a favorite on the phone. Resolves to { fav: 1|0 } (new state). */

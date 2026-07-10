@@ -75,6 +75,11 @@ const HEADER_H = 28;
 const ROW_H = 40;
 const ARRIVAL_ROW_H = 44;
 const VISIBLE_ROWS = Math.floor((render.height - HEADER_H) / ROW_H);
+const VISIBLE_ARRIVALS = Math.floor((render.height - HEADER_H - 4) / ARRIVAL_ROW_H);
+const MAX_EXPAND = 6;   // list Down "load more": max radius-widening steps
+const ARR_DEFAULT = 6;  // arrivals requested on open
+const ARR_MAX = 10;     // arrivals ceiling for "load more" (phone caps too)
+const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
 
 // draw() must stay ALLOCATION-FREE (docs/WATCH-DEBUGGING-PLAYBOOK.md §B):
 // string churn in the render path fragments this watch's tiny heap until an
@@ -102,10 +107,13 @@ const state = {
   stopTitle: "",              // precomputed header text for the ARRIVALS screen
   stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
   arrivals: [],               // [{line, dest, min, + display fields fitted in draw()}]
+  arrTop: 0,                   // first visible arrival (scroll window)
+  arrLimit: ARR_DEFAULT,       // how many arrivals we ask the phone for
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
   arrivalsStatus: "Loading…",
   refreshTimer: null,
   nearbyPending: false,       // in-flight guard — see fetchNearby()
+  radiusExpand: 0,            // list Down "load more" widening steps (0 = normal)
   favPending: false,          // in-flight guard for the favorite toggle
   timeStr: "",                // precomputed clock text (see updateClock)
   timeMin: -1,                // last minute we formatted — gates reformat/redraw
@@ -212,8 +220,11 @@ function draw() {
       render.drawText(state.arrivalsStatus, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
       let y = HEADER_H + 4;
-      for (const a of state.arrivals) {
+      // Scrollable window: draw from state.arrTop (Up/Down scroll; Down at the
+      // bottom loads more — see the button handler).
+      for (let i = state.arrTop; i < state.arrivals.length; i++) {
         if (y + ARRIVAL_ROW_H > render.height) break;
+        const a = state.arrivals[i];
         if (a.lineText === undefined) {
           // Fit lazily, in-frame, once per arrival (see fitVisibleRows()).
           a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
@@ -305,27 +316,41 @@ let migFavs = localStorage.getItem("favorites.v1");
 // and answers with a display-ready rows list. In-flight guard: pull-to-
 // refresh (Up at the top of the list) must be a no-op while a request is
 // out — stacked cycles pin live memory (playbook §B).
-function fetchNearby() {
+// fresh: bypass the phone's instant stale reply (the revalidation follow-up).
+// expand: "load more" — ask the phone to widen the search radius N steps.
+// The phone answers a plain request instantly from its cached list (stale:1);
+// we show it, then fire one fresh:1 follow-up here to replace it with live
+// data. Only blank to "Finding stops…" when we have nothing to show, so a
+// revalidate or a widen never wipes the list the user is looking at.
+function fetchNearby(fresh, expand) {
   if (state.nearbyPending) return;
   state.nearbyPending = true;
-  state.status = "Finding stops…";
-  draw();
-  protocol.nearbyStops(migFavs)
+  if (!state.rows.length) {
+    state.status = "Finding stops…";
+    draw();
+  }
+  protocol.nearbyStops(migFavs, fresh, expand)
     .then(resp => {
       state.nearbyPending = false;
-      if (migFavs) {
+      const isStale = !!resp.stale;
+      // Migration completes only on a real (non-stale) response — the stale
+      // reply is served before the phone imports anything.
+      if (migFavs && !isStale) {
         migFavs = null;
         localStorage.removeItem("favorites.v1");
       }
       setRowsFromResponse(resp.rows || []);
       state.status = state.rows.length ? "" : "No stops nearby";
       draw();
+      if (isStale) fetchNearby(true); // revalidate the instant list once
     })
     .catch(err => {
       state.nearbyPending = false;
       console.log("nearby failed: " + err.message);
-      state.status = "Error: " + err.message;
-      draw();
+      if (!state.rows.length) {
+        state.status = "Error: " + err.message;
+        draw();
+      }
     });
 }
 
@@ -342,6 +367,8 @@ function openArrivals(stop) {
     row.subtitle = undefined;
   }
   state.arrivals = [];
+  state.arrTop = 0;               // top of the scroll window for this stop
+  state.arrLimit = ARR_DEFAULT;   // reset "load more" growth per stop
   // Reset the guard so a still-in-flight request for a previous stop can't
   // block this screen's first fetch (its late response is ignored by the
   // identity check in fetchArrivals).
@@ -366,11 +393,13 @@ function fetchArrivals() {
   if (!state.stop || state.arrivalsPending) return;
   state.arrivalsPending = true;
   const requested = state.stop;
-  protocol.arrivals(requested.agency, requested.code)
+  protocol.arrivals(requested.agency, requested.code, state.arrLimit)
     .then(resp => {
       state.arrivalsPending = false;
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       state.arrivals = prepareArrivals(resp.arrivals || []);
+      // Keep the scroll window valid if a refresh returned fewer rows.
+      if (state.arrTop >= state.arrivals.length) state.arrTop = 0;
       state.arrivalsStatus = state.arrivals.length ? "" : "No arrivals";
       draw();
     })
@@ -412,9 +441,16 @@ new Button({
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
-        else fetchNearby(); // already at top: pull to refresh
-      } else if (type === "down" && state.sel < state.rows.length - 1) {
-        state.sel++; clampScroll(); draw();
+        // At the top: pull-to-refresh, and reset any radius widening.
+        else { state.radiusExpand = 0; fetchNearby(false); }
+      } else if (type === "down") {
+        if (state.sel < state.rows.length - 1) {
+          state.sel++; clampScroll(); draw();
+        } else if (state.rows.length && state.radiusExpand < MAX_EXPAND) {
+          // At the bottom: widen the search to load more stops (no refresh).
+          state.radiusExpand++;
+          fetchNearby(false, state.radiusExpand);
+        }
       } else if (type === "select" && state.rows.length) {
         openArrivals(state.rows[state.sel]);
       } else if (type === "back") {
@@ -439,8 +475,18 @@ new Button({
           .catch(() => { state.favPending = false; });
       } else if (type === "back") {
         closeArrivals();
-      } else if (type === "up" || type === "down") {
-        fetchArrivals(); // manual refresh
+      } else if (type === "up") {
+        // Scroll up; at the very top, manual refresh.
+        if (state.arrTop > 0) { state.arrTop--; draw(); }
+        else fetchArrivals();
+      } else if (type === "down") {
+        // Scroll down; at the bottom, load more arrival times (no refresh).
+        if (state.arrTop + VISIBLE_ARRIVALS < state.arrivals.length) {
+          state.arrTop++; draw();
+        } else if (state.arrivals.length >= state.arrLimit && state.arrLimit < ARR_MAX) {
+          state.arrLimit = Math.min(ARR_MAX, state.arrLimit + ARR_STEP);
+          fetchArrivals();
+        }
       }
     }
   }
@@ -451,7 +497,7 @@ new Button({
 // Re-run nearby search when the phone-side settings change (e.g. the user
 // enabled another agency or entered an API key).
 protocol.onSettingsChanged = () => {
-  if (state.mode === MODE_LIST) fetchNearby();
+  if (state.mode === MODE_LIST) { state.radiusExpand = 0; fetchNearby(false); }
 };
 
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";

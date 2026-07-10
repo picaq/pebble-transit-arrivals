@@ -25,7 +25,7 @@ CLAUDE.md §11–12 and `docs/WATCH-DEBUGGING-PLAYBOOK.md`):
 | Screen | What it shows | Entry / exit |
 |---|---|---|
 | LIST (`MODE_LIST`) | Header "Transit Glance", then favorites (★, nearest first, dimmed when nothing is arriving, hidden entirely beyond the hide-distance setting) followed by nearby stops | App start; Back from ARRIVALS |
-| ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, up to ~3 arrival rows, footer favorite hint | Select on a list row; Back returns |
+| ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, scrollable arrival rows (~4 visible, `VISIBLE_ARRIVALS`), footer favorite hint | Select on a list row; Back returns |
 
 All rendering is Poco (immediate mode, full redraw) in
 `src/embeddedjs/main.js`. Switching to Piu is possible but is an
@@ -119,14 +119,21 @@ nothing.
 Watch-side strings cost heap; keep them short. Subtitle/label formatting
 changes belong on the phone, not the watch (thin-client rule).
 
-## 6. Button behavior (`src/embeddedjs/main.js:358-397`)
+## 6. Button behavior (`src/embeddedjs/main.js:437-493`)
 
 | Button | LIST screen | ARRIVALS screen |
 |---|---|---|
-| Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search) | Manual refresh |
-| Down | Move selection down | Manual refresh |
+| Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search, and reset any radius widening) | Scroll up; **at top: manual refresh** |
+| Down | Move selection down; **at bottom: load more stops** — widen the search radius one step (`state.radiusExpand`, up to `MAX_EXPAND`=6), no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
 | Select | Open arrivals for highlighted stop | Toggle ★ favorite **visibility** (never deletes) — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
 | Back | Exit app (`watch.exit()`) | Return to list |
+
+Neither screen refreshes on **Down** anymore (it was a wasted API call): Down
+always means "show me more" — more stops (wider radius) on the list, more
+arrivals on the arrivals screen. Manual refresh survives only as **Up at the
+very top** of either screen. The arrivals screen is scrollable
+(`state.arrTop`, `VISIBLE_ARRIVALS` rows visible); the widened list and the
+raised arrival count are both still bounded by the payload/ceiling caps in §9.
 
 Actions fire on press (`down === true`), releases ignored. Because
 `"back"` is registered, single-tap auto-exit is replaced — LIST-screen
@@ -141,7 +148,8 @@ has crashed the watch (CLAUDE.md §12 item 12).
 |---|---|---|
 | Arrivals auto-refresh while screen open | 60 s | `Timer.repeat` in `openArrivals()`, `main.js:305` |
 | Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:367` |
-| Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js:244` — one StopMonitoring call per agency, no stopcode |
+| Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js:244` — one StopMonitoring call per agency, no stopcode. These per-agency calls are fired **concurrently** (not serially) in `buildRows`/`getFavoriteStatus` — the sequential version was the main field latency |
+| Persisted rows list (stale-while-revalidate) | 6 h | `ROWS_STALE_TTL_MS`, `index.js` — a plain `nearby` request is answered instantly from this cache (`stale:1`, no geolocation/network); the watch shows it, then sends one `fresh:1` follow-up that does the real compute and replaces the list. Widened ("load more") lists are not cached |
 | Stop-list cache | 7 days | `STOP_CACHE_TTL_MS`, `transit511.js:38` |
 | Watch request timeout | 15 s | `REQUEST_TIMEOUT_MS`, `protocol.js:48` |
 | Phone HTTP timeout | 20 s | `getJSON()`, `transit511.js:45` |
@@ -180,9 +188,9 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 |---|---|---|
 | Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14 | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js:149-170` |
-| Search radius | `radiusM` setting, default 500 m | settings, `index.js:31` |
+| Search radius | `radiusM` setting, default 500 m; **Down "load more" widens it** +500 m per step (and +2 `maxStops`), up to `MAX_EXPAND`=6 steps (`req.x` → widened `effSettings` on the phone). Still bounded by the ceiling/payload caps, so widening mostly surfaces farther stops where few are nearby | settings + `handleRequest` nearby, `index.js`; `state.radiusExpand`, `main.js` |
 | Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js` |
-| Arrivals per stop | max 6 | parse loop, `transit511.js:413` |
+| Arrivals per stop | default 6; **Down "load more" raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 
 ## 10. Text truncation lengths
 
