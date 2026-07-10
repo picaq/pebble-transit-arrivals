@@ -96,11 +96,14 @@ over (the bottom-most visible row, filled in `ACCENT` blue) the box switches
 to `ACCENT` with `WHITE` text so the clock blends into the selection instead
 of punching a white hole in it — the overlap is detected geometrically
 in-frame (does the selected row's rect reach the clock band), so it stays
-allocation-free. `updateClock()` is
-driven by `watch.addEventListener("secondchange", …)` and gated on the
-minute so it only reformats/redraws once a minute; `timeX` is remeasured
-in-frame (via the `timeDirty` flag) so steady-state draws still allocate
-nothing.
+allocation-free. `updateClock()` is driven by a **minute-aligned `Timer`**
+(`Timer.set` to the next minute boundary, then `Timer.repeat(…, 60000)`) —
+**not** a `secondchange` listener. A per-second wakeup churned ~80 B/s of
+heap for a display that only changes once a minute, which pushed the tiny
+chunk heap to near-zero free at every GC peak and was the cause of "memory
+full" crashes during normal use (playbook §B; measured chunk-free jumped
+from ~124 B to ~1.9 KB after the switch). `timeX` is remeasured in-frame
+(via the `timeDirty` flag) so steady-state draws still allocate nothing.
 
 ## 5. Static strings
 

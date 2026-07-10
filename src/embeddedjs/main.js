@@ -117,7 +117,7 @@ const state = {
   moreExhausted: false,       // list "load more" reached the end (no more stops)
   favPending: false,          // in-flight guard for the favorite toggle
   timeStr: "",                // precomputed clock text (see updateClock)
-  timeMin: -1,                // last minute we formatted — gates reformat/redraw
+  minStamp: -1,               // last integer minute stamp — gates reformat/redraw
   timeX: 0,                   // cached right-aligned x for timeStr
   timeDirty: false            // timeStr changed → remeasure timeX inside draw()
 };
@@ -278,14 +278,21 @@ function draw() {
 
 // Format the clock into state.timeStr and redraw, but only when the minute
 // actually changes — the "secondchange" listener calls this every second, so
-// the timeMin gate keeps us from reformatting/redrawing 59 times a minute for
-// nothing. new Date() is the only per-second allocation and it's outside the
-// draw path. 12-hour, no leading zero, no AM/PM (e.g. "3:45").
+// the minute-stamp gate keeps us from reformatting/redrawing (and, crucially,
+// from allocating a Date) on the 59 no-op ticks a minute. 12-hour, no leading
+// zero, no AM/PM (e.g. "3:45").
 function updateClock() {
-  const now = new Date();
+  // secondchange fires every second. Gate on the integer minute stamp, which
+  // Date.now() gives as a primitive (no allocation), so the 59 no-op ticks a
+  // minute allocate NOTHING. Allocating a Date every second churned the tiny
+  // chunk heap toward saturation between GCs — a "memory full" fragmentation
+  // risk (playbook §B), and the likely cause of easy memory-full crashes.
+  const ms = Date.now();
+  const minStamp = (ms / 60000) | 0;
+  if (minStamp === state.minStamp) return;
+  state.minStamp = minStamp;
+  const now = new Date(ms); // allocate a Date only on the real minute boundary
   const min = now.getMinutes();
-  if (min === state.timeMin) return;
-  state.timeMin = min;
   let h = now.getHours() % 12;
   if (h === 0) h = 12;
   state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
@@ -531,10 +538,16 @@ protocol.onSettingsChanged = () => {
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
 draw();
 
-// Clock: tick the bottom-right time. secondchange fires every second;
-// updateClock only reformats/redraws on the minute boundary (see its gate).
-watch.addEventListener("secondchange", updateClock);
-updateClock(); // paint the initial time now instead of waiting up to 60 s
+// Clock: tick the bottom-right time once a MINUTE via a Timer, aligned to the
+// wall-clock boundary — not a per-second "secondchange" listener. A per-second
+// wakeup churns the tiny heap every second for a display that only changes
+// once a minute (playbook §B). Timer.set lands on the next minute boundary,
+// then Timer.repeat holds the 60 s cadence.
+updateClock(); // paint immediately
+Timer.set(() => {
+  updateClock();
+  Timer.repeat(updateClock, 60000);
+}, 60000 - (Date.now() % 60000));
 
 // The first nearby fetch is driven by the phone: pkjs sends a
 // SettingsChanged ping from its "ready" handler (see src/pkjs/index.js),

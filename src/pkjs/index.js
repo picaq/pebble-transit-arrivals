@@ -547,7 +547,7 @@ function handleRequest(req) {
       }
     }
     if (req.mig) importLegacyFavs(req.mig);
-    console.log("req nearby: locating…");
+    console.log("req nearby: locating...");
     navigator.geolocation.getCurrentPosition(
       function (pos) {
         buildRows(req, pos.coords.latitude, pos.coords.longitude, settings);

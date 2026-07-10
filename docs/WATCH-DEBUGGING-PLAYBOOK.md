@@ -137,6 +137,24 @@ established on real hardware in this repo:
   data; parsed payload trees must become garbage in the same handler that
   received them.** Derived state that changes later (fav flags) is
   updated in place on the display rows, not rebuilt from a kept payload.
+- **Sixth recurrence (2026-07-10): a per-second `secondchange` listener
+  churned the heap.** A bottom-right clock overlay registered
+  `watch.addEventListener("secondchange", updateClock)`. Even though
+  `updateClock` early-returned on the 59 no-op ticks a minute, *having the
+  listener fire every second* allocated ~80 B/s of chunk heap (event
+  dispatch + handler invocation), which climbed to near-saturation between
+  GCs — instrumentation showed chunk-free hitting **~124 B at every peak**,
+  so any real allocation (JSON.parse of a response, appending rows, a busy
+  arrivals screen) faulted. It read as "memory full easily" during normal
+  use. Gating the *body* on `Date.now()` instead of `new Date()` did **not**
+  help (the churn was the per-second wakeup, not the Date). The fix:
+  drive the clock from a **minute-aligned `Timer`** (`Timer.set` to the next
+  boundary, then `Timer.repeat(…, 60000)`) — chunk-free went from ~124 B to
+  **~1.9 KB stable**, better than the healthy reference. Lesson: **a display
+  that changes once a minute must not wake once a second.** Periodic
+  listeners/timers are continuous churn; match the wakeup cadence to how
+  often the output actually changes, and measure with §F — the per-second
+  climb between GCs is the signature.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
@@ -304,6 +322,11 @@ Beyond CLAUDE.md §11:
 - Every `new render.Font(...)` pair verified against `xsHost.c`'s table.
 - Every timer has an owner responsible for clearing it on every exit path,
   including promise rejection and screen close.
+- **Match wakeup cadence to how often the output changes.** A periodic
+  listener/timer is continuous heap churn even if its handler early-returns
+  — a per-second `secondchange` clock that only updates once a minute drove
+  a "memory full" regression (§B, sixth recurrence). Use a minute-cadence
+  `Timer` for a minute display, not a second tick you throttle in JS.
 - Sensors (`Location`) are one-shot: `close()` in both callbacks, plus an
   in-flight guard so repeated button presses can't stack instances.
 - Every user-triggerable request path (button-driven refreshes included) has
