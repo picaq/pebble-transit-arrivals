@@ -233,18 +233,32 @@ function draw() {
   }
 
   // Clock overlay — bottom-right, on the footer/favorite-hint line, drawn last
-  // so it hovers on top of any row or hint behind it. A white box behind it
-  // keeps it legible over whatever it covers. timeX is remeasured only when
-  // the minute changes (timeDirty), in-frame, so steady-state draws allocate
-  // nothing (playbook §B).
+  // so it hovers on top of any row or hint behind it. A box behind it keeps it
+  // legible over whatever it covers. When the selected list row is the one the
+  // clock sits over (the bottom-most visible row, drawn in ACCENT), the box
+  // matches that blue and the text goes white so the clock blends into the
+  // selection instead of punching a white hole in it. timeX is remeasured only
+  // when the minute changes (timeDirty), in-frame, so steady-state draws
+  // allocate nothing (playbook §B).
   if (state.timeStr) {
     if (state.timeDirty) {
       state.timeX = render.width - render.getTextWidth(state.timeStr, fontSub) - 4;
       state.timeDirty = false;
     }
     const ty = render.height - 18;
-    render.fillRectangle(WHITE, state.timeX - 3, ty - 1, render.width - state.timeX + 3, 17);
-    render.drawText(state.timeStr, fontSub, BLACK, state.timeX, ty);
+    // onSel: does the ACCENT-filled selected row overlap the clock band?
+    // Only the bottom-most visible row's rect can reach ty (see VISIBLE_ROWS).
+    let onSel = false;
+    if (state.mode === MODE_LIST && state.rows.length) {
+      const selVis = state.sel - state.top;
+      if (selVis >= 0 && selVis < VISIBLE_ROWS) {
+        const sy = HEADER_H + selVis * ROW_H;
+        if (sy < ty + 16 && sy + ROW_H > ty - 1) onSel = true;
+      }
+    }
+    render.fillRectangle(onSel ? ACCENT : WHITE,
+                         state.timeX - 3, ty - 1, render.width - state.timeX + 3, 17);
+    render.drawText(state.timeStr, fontSub, onSel ? WHITE : BLACK, state.timeX, ty);
   }
   render.end();
 }

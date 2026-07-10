@@ -87,10 +87,16 @@ when it would hit the footer.
 
 **Clock overlay** (all screens): the current time draws bottom-right on the
 same `screen.height − 18` line as the footer hint, right-aligned to
-`screen.width − 4`, in `fontSub`/`BLACK` over a white background box, and is
+`screen.width − 4`, in `fontSub` over a background box, and is
 drawn **last** in `draw()` so it hovers on top of any row or the favorite
 hint behind it (the box keeps it legible). On the LIST screen it can cover
-the tail of the bottom row; that overlap is intended. `updateClock()` is
+the tail of the bottom row; that overlap is intended. Normally the box is
+white with `BLACK` text, but when the selected row is the one the clock sits
+over (the bottom-most visible row, filled in `ACCENT` blue) the box switches
+to `ACCENT` with `WHITE` text so the clock blends into the selection instead
+of punching a white hole in it — the overlap is detected geometrically
+in-frame (does the selected row's rect reach the clock band), so it stays
+allocation-free. `updateClock()` is
 driven by `watch.addEventListener("secondchange", …)` and gated on the
 minute so it only reformats/redraws once a minute; `timeX` is remeasured
 in-frame (via the `timeDirty` flag) so steady-state draws still allocate
