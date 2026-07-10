@@ -370,7 +370,10 @@ function buildRows(req, lat, lon, settings) {
         var st = status[f.agency + ":" + f.code];
         var dist = st && st.dist >= 0 ? st.dist : undefined;
         if (dist !== undefined && dist > hideM) return; // beyond the hide line
-        var noArr = !!st && st.hasArr === 0;
+        // hasArr is a boolean from the stop-info map (false = checked, nothing
+        // arriving; undefined = not checked, e.g. beyond the hide line — leave
+        // those undimmed). It used to be 0/1, hence the earlier `=== 0`.
+        var noArr = !!st && st.hasArr === false;
         var row = {
           a: f.agency, c: f.code,
           n: (st && st.name) || f.name,
