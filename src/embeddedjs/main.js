@@ -76,7 +76,8 @@ const ROW_H = 40;
 const ARRIVAL_ROW_H = 44;
 const VISIBLE_ROWS = Math.floor((render.height - HEADER_H) / ROW_H);
 const VISIBLE_ARRIVALS = Math.floor((render.height - HEADER_H - 4) / ARRIVAL_ROW_H);
-const MAX_EXPAND = 6;   // list Down "load more": max radius-widening steps
+const MAX_LIST_ROWS = 14; // list "load more" cap (favorites + nearby) — keeps
+                          // the on-watch list within the safe bound (playbook §B)
 const ARR_DEFAULT = 6;  // arrivals requested on open
 const ARR_MAX = 10;     // arrivals ceiling for "load more" (phone caps too)
 const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
@@ -113,7 +114,7 @@ const state = {
   arrivalsStatus: "Loading…",
   refreshTimer: null,
   nearbyPending: false,       // in-flight guard — see fetchNearby()
-  radiusExpand: 0,            // list Down "load more" widening steps (0 = normal)
+  moreExhausted: false,       // list "load more" reached the end (no more stops)
   favPending: false,          // in-flight guard for the favorite toggle
   timeStr: "",                // precomputed clock text (see updateClock)
   timeMin: -1,                // last minute we formatted — gates reformat/redraw
@@ -135,6 +136,7 @@ function setRowsFromResponse(list) {
     agency: r.a, code: r.c, name: r.n, sub: r.s, fav: !!r.f, dim: !!r.m
   }));
   if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
+  state.moreExhausted = false; // a full (re)load resets "load more" pagination
   clampScroll();
 }
 
@@ -317,19 +319,18 @@ let migFavs = localStorage.getItem("favorites.v1");
 // refresh (Up at the top of the list) must be a no-op while a request is
 // out — stacked cycles pin live memory (playbook §B).
 // fresh: bypass the phone's instant stale reply (the revalidation follow-up).
-// expand: "load more" — ask the phone to widen the search radius N steps.
 // The phone answers a plain request instantly from its cached list (stale:1);
 // we show it, then fire one fresh:1 follow-up here to replace it with live
 // data. Only blank to "Finding stops…" when we have nothing to show, so a
-// revalidate or a widen never wipes the list the user is looking at.
-function fetchNearby(fresh, expand) {
+// revalidate never wipes the list the user is looking at.
+function fetchNearby(fresh) {
   if (state.nearbyPending) return;
   state.nearbyPending = true;
   if (!state.rows.length) {
     state.status = "Finding stops…";
     draw();
   }
-  protocol.nearbyStops(migFavs, fresh, expand)
+  protocol.nearbyStops(migFavs, fresh)
     .then(resp => {
       state.nearbyPending = false;
       const isStale = !!resp.stale;
@@ -351,6 +352,36 @@ function fetchNearby(fresh, expand) {
         state.status = "Error: " + err.message;
         draw();
       }
+    });
+}
+
+// "Load more stops": append the next page of farther non-favorite stops. The
+// phone paginates from the offset (how many non-favorites we already show).
+// Bounded by MAX_LIST_ROWS and stopped once the phone returns none, so the
+// on-watch list can't grow without limit (playbook §B). Reuses the nearby
+// in-flight guard so it can't stack with a refresh.
+function fetchMore() {
+  if (state.nearbyPending || state.moreExhausted) return;
+  if (state.rows.length >= MAX_LIST_ROWS) return;
+  let off = 0;
+  for (let i = 0; i < state.rows.length; i++) if (!state.rows[i].fav) off++;
+  state.nearbyPending = true;
+  protocol.moreStops(off)
+    .then(resp => {
+      state.nearbyPending = false;
+      const more = resp.rows || [];
+      if (!more.length) { state.moreExhausted = true; return; }
+      for (const r of more) {
+        if (state.rows.length >= MAX_LIST_ROWS) break;
+        state.rows.push({
+          agency: r.a, code: r.c, name: r.n, sub: r.s, fav: false, dim: !!r.m
+        });
+      }
+      draw();
+    })
+    .catch(err => {
+      state.nearbyPending = false;
+      console.log("more failed: " + err.message);
     });
 }
 
@@ -441,15 +472,12 @@ new Button({
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
-        // At the top: pull-to-refresh, and reset any radius widening.
-        else { state.radiusExpand = 0; fetchNearby(false); }
+        else fetchNearby(false); // at the top: pull-to-refresh
       } else if (type === "down") {
         if (state.sel < state.rows.length - 1) {
           state.sel++; clampScroll(); draw();
-        } else if (state.rows.length && state.radiusExpand < MAX_EXPAND) {
-          // At the bottom: widen the search to load more stops (no refresh).
-          state.radiusExpand++;
-          fetchNearby(false, state.radiusExpand);
+        } else if (state.rows.length) {
+          fetchMore(); // at the bottom: append more (farther) stops
         }
       } else if (type === "select" && state.rows.length) {
         openArrivals(state.rows[state.sel]);
@@ -497,7 +525,7 @@ new Button({
 // Re-run nearby search when the phone-side settings change (e.g. the user
 // enabled another agency or entered an API key).
 protocol.onSettingsChanged = () => {
-  if (state.mode === MODE_LIST) { state.radiusExpand = 0; fetchNearby(false); }
+  if (state.mode === MODE_LIST) fetchNearby(false);
 };
 
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";

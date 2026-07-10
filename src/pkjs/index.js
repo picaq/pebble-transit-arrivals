@@ -143,12 +143,19 @@ function saveSettings(settings) {
 // before any geolocation or network work runs. A non-fresh "nearby" request
 // is answered immediately from this cache with stale:1; the watch shows it,
 // then fires exactly one fresh:1 follow-up that does the real compute and
-// replaces the list. Only the normal (non-widened) list is cached so a
-// launch never flashes an expanded list and then shrinks (see req.x).
+// replaces the list. Only the normal page-0 list is cached — "load more"
+// pages (buildMoreRows) are not, so a launch never flashes a long list.
 var ROWS_CACHE_KEY = "rows.v1";
 // Don't serve a stale list older than this — past it you may be somewhere
 // else entirely, so eat the compute rather than flash a wrong location.
 var ROWS_STALE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+
+// "Load more stops" pagination (buildMoreRows): a wide search radius so
+// farther stops become reachable, and how many farther stops to return per
+// page. The watch caps its total list length, so this only needs to feed
+// the next screenful.
+var MORE_RADIUS_M = 5000;
+var MORE_PAGE = 8;
 
 function loadRowsCache() {
   try {
@@ -403,10 +410,10 @@ function buildRows(req, lat, lon, settings) {
       while (JSON.stringify(body).length > 880 && rows.length > favRows.length) {
         rows.pop();
       }
-      // Persist the normal list for instant stale-while-revalidate replies.
-      // Widened lists (Down "load more", req.x) are not cached so a later
-      // cold launch doesn't flash an expanded list and then shrink.
-      if (!req.x) saveRowsCache(rows);
+      // Persist the list for instant stale-while-revalidate replies. Only the
+      // normal page-0 list reaches here ("load more" pages go through
+      // buildMoreRows and are never cached).
+      saveRowsCache(rows);
       respond(req.id, body);
     };
 
@@ -443,6 +450,56 @@ function buildRows(req, lat, lon, settings) {
   });
 }
 
+// "Load more stops": return non-favorite nearby stops beyond the req.off
+// nearest (the ones the watch already shows), ranked by distance from a wide
+// search. No favorites block and no stale cache — the watch appends these to
+// its list. An empty rows array means there are no more stops (the watch then
+// stops asking). Mirrors buildRows' subtitle formatting.
+function buildMoreRows(req, lat, lon, settings) {
+  transit.findNearbyStops(lat, lon, settings, function (err, stops) {
+    if (err) return respond(req.id, { type: "error", message: err.message });
+    var favKeys = {};
+    loadFavs().filter(function (f) { return !f.hide; })
+      .forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
+
+    var agSet = {};
+    stops.forEach(function (s) {
+      if (!favKeys[s.agency + ":" + s.code]) agSet[s.agency] = 1;
+    });
+    var infoByAgency = {};
+    var list = Object.keys(agSet);
+    var remaining = list.length;
+
+    var finish = function () {
+      var infoFor = function (a, c) {
+        return infoByAgency[a] && infoByAgency[a][c];
+      };
+      var rows = [];
+      stops.forEach(function (s) {
+        if (favKeys[s.agency + ":" + s.code]) return; // favorites already shown
+        rows.push({
+          a: s.agency, c: s.code, n: s.name,
+          s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
+            dirLinesSuffix(infoFor(s.agency, s.code))
+        });
+      });
+      rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
+      var body = { type: "rows", rows: rows };
+      while (JSON.stringify(body).length > 880 && rows.length > 1) rows.pop();
+      console.log("more rows: " + rows.length + " beyond off " + req.off);
+      respond(req.id, body);
+    };
+
+    if (!remaining) return finish();
+    list.forEach(function (ag) {
+      transit.getStopInfo(ag, settings.apiKey, function (e, map) {
+        if (!e) infoByAgency[ag] = map;
+        if (--remaining === 0) finish();
+      });
+    });
+  });
+}
+
 function handleRequest(req) {
   var settings = loadSettings();
 
@@ -454,10 +511,32 @@ function handleRequest(req) {
   }
 
   if (req.cmd === "nearby") {
-    // Instant stale reply: answer a plain (non-fresh, non-widened) request
-    // from the persisted list with no geolocation or network work, then let
-    // the watch revalidate with a fresh:1 follow-up (see rows cache above).
-    if (!req.fresh && !req.x) {
+    // "Load more stops" (req.off = how many non-favorite stops the watch
+    // already shows): paginate the next farther stops from a wide search and
+    // let the watch append them. Never touches the stale cache.
+    if (req.off) {
+      var wide = {};
+      for (var wk in settings) wide[wk] = settings[wk];
+      wide.radiusM = Math.max(settings.radiusM, MORE_RADIUS_M);
+      // Reach past the default candidate ceiling far enough for one more page.
+      wide.maxStops = Number(req.off) + MORE_PAGE + 2;
+      wide.hardCeiling = Number(req.off) + MORE_PAGE + 2;
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          buildMoreRows(req, pos.coords.latitude, pos.coords.longitude, wide);
+        },
+        function (geoErr) {
+          console.log("geolocation failed: " + (geoErr && geoErr.message));
+          respond(req.id, { type: "error", message: "No phone location" });
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 }
+      );
+      return;
+    }
+    // Instant stale reply: answer a plain (non-fresh) request from the
+    // persisted list with no geolocation or network work, then let the watch
+    // revalidate with a fresh:1 follow-up (see rows cache above).
+    if (!req.fresh) {
       var cachedRows = loadRowsCache();
       if (cachedRows) {
         console.log("req nearby: served stale (" + cachedRows.length + " rows)");
@@ -465,21 +544,10 @@ function handleRequest(req) {
       }
     }
     if (req.mig) importLegacyFavs(req.mig);
-    // Down "load more" (req.x) widens the search: each step adds radius (and a
-    // couple of soft-cap slots). The 880 B payload / HARD_STOP_CEILING caps
-    // still bound the list, so widening mainly surfaces farther stops where
-    // few are nearby — exactly the "nothing close, look further" case.
-    var effSettings = settings;
-    if (req.x) {
-      effSettings = {};
-      for (var sk in settings) effSettings[sk] = settings[sk];
-      effSettings.radiusM = settings.radiusM + Number(req.x) * 500;
-      effSettings.maxStops = settings.maxStops + Number(req.x) * 2;
-    }
-    console.log("req nearby: locating…" + (req.x ? " (widen " + req.x + ")" : ""));
+    console.log("req nearby: locating…");
     navigator.geolocation.getCurrentPosition(
       function (pos) {
-        buildRows(req, pos.coords.latitude, pos.coords.longitude, effSettings);
+        buildRows(req, pos.coords.latitude, pos.coords.longitude, settings);
       },
       function (geoErr) {
         console.log("geolocation failed: " + (geoErr && geoErr.message));

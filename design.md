@@ -123,8 +123,8 @@ changes belong on the phone, not the watch (thin-client rule).
 
 | Button | LIST screen | ARRIVALS screen |
 |---|---|---|
-| Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search, and reset any radius widening) | Scroll up; **at top: manual refresh** |
-| Down | Move selection down; **at bottom: load more stops** — widen the search radius one step (`state.radiusExpand`, up to `MAX_EXPAND`=6), no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
+| Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search) | Scroll up; **at top: manual refresh** |
+| Down | Move selection down; **at bottom: load more stops** — append the next page of farther stops (`fetchMore()` → phone `buildMoreRows`), up to `MAX_LIST_ROWS`=14 total, no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
 | Select | Open arrivals for highlighted stop | Toggle ★ favorite **visibility** (never deletes) — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
 | Back | Exit app (`watch.exit()`) | Return to list |
 
@@ -132,8 +132,11 @@ Neither screen refreshes on **Down** anymore (it was a wasted API call): Down
 always means "show me more" — more stops (wider radius) on the list, more
 arrivals on the arrivals screen. Manual refresh survives only as **Up at the
 very top** of either screen. The arrivals screen is scrollable
-(`state.arrTop`, `VISIBLE_ARRIVALS` rows visible); the widened list and the
-raised arrival count are both still bounded by the payload/ceiling caps in §9.
+(`state.arrTop`, `VISIBLE_ARRIVALS` rows visible). "Load more" **appends** on
+both screens (more stops / more arrivals) rather than widening a radius, so
+it keeps working in dense areas; both are bounded by the caps in §9
+(`MAX_LIST_ROWS`, `ARR_MAX`) and each AppMessage page still fits the 880 B
+payload — the watch accumulates the pages in RAM.
 
 Actions fire on press (`down === true`), releases ignored. Because
 `"back"` is registered, single-tap auto-exit is replaced — LIST-screen
@@ -187,8 +190,8 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Behavior | Value | Where |
 |---|---|---|
 | Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
-| Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14 | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js:149-170` |
-| Search radius | `radiusM` setting, default 500 m; **Down "load more" widens it** +500 m per step (and +2 `maxStops`), up to `MAX_EXPAND`=6 steps (`req.x` → widened `effSettings` on the phone). Still bounded by the ceiling/payload caps, so widening mostly surfaces farther stops where few are nearby | settings + `handleRequest` nearby, `index.js`; `state.radiusExpand`, `main.js` |
+| Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14. **Down "load more" appends** farther stops up to `MAX_LIST_ROWS`=14 total on the watch (the phone paginates via `buildMoreRows`, `off` = non-favorites already shown, `hardCeiling` override on `selectNearbyStops` reaches past the default 14 candidates) | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js`; `fetchMore()`, `main.js` |
+| Search radius | `radiusM` setting, default 500 m for the page-0 list; "load more" paginates from a wider `MORE_RADIUS_M`=5000 m search so farther stops become reachable | settings, `index.js`; `buildMoreRows`, `index.js` |
 | Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js` |
 | Arrivals per stop | default 6; **Down "load more" raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 

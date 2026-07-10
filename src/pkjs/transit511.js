@@ -156,11 +156,12 @@ var HARD_STOP_CEILING = 14;
  * index. A widening gap between consecutive stops marks the cluster's edge.
  * Bounded by HARD_STOP_CEILING either way.
  */
-function selectNearbyStops(results, maxStops) {
+function selectNearbyStops(results, maxStops, ceiling) {
+  ceiling = ceiling || HARD_STOP_CEILING;
   var floor = Math.max(1, maxStops);
-  if (results.length <= floor) return results.slice(0, HARD_STOP_CEILING);
+  if (results.length <= floor) return results.slice(0, ceiling);
   var count = floor;
-  while (count < HARD_STOP_CEILING && count < results.length) {
+  while (count < ceiling && count < results.length) {
     var cur = results[count - 1].dist;
     var next = results[count].dist;
     if (next > cur * 1.4 + 50) break; // gap: edge of the cluster
@@ -186,7 +187,9 @@ function findNearbyStops(lat, lon, settings, cb) {
     if (!agencies.length) {
       if (!results.length && errors.length) return cb(new Error(errors[0]));
       results.sort(function (a, b) { return a.dist - b.dist; });
-      var selected = selectNearbyStops(results, settings.maxStops);
+      // hardCeiling override lets "load more" pagination reach past the
+      // default 14-candidate ceiling (index.js buildMoreRows).
+      var selected = selectNearbyStops(results, settings.maxStops, settings.hardCeiling);
       // Extending past the usual ~8-stop payload budget: compact names
       // further rather than raising the per-stop byte cost unbounded.
       if (selected.length > 8) {

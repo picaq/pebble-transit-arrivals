@@ -11,14 +11,16 @@
  *   phone -> watch : { Response: "<json string>" }
  *
  * Request JSON:
- *   { id, cmd: "nearby",   mig?, fresh?, x? }
+ *   { id, cmd: "nearby",   mig?, fresh?, off? }
  *                          // the PHONE owns favorites and takes the location
  *                          // fix itself; mig is a one-time migration payload
  *                          // (the watch's legacy favorites.v1 JSON string),
  *                          // sent until a rows response succeeds, then
  *                          // deleted. fresh=1 bypasses the phone's instant
- *                          // stale reply (the revalidation follow-up). x=N
- *                          // widens the search radius N steps ("load more").
+ *                          // stale reply (the revalidation follow-up). off=N
+ *                          // is a "load more" page request: return the stops
+ *                          // beyond the N non-favorites already shown (the
+ *                          // watch appends them; empty rows = no more).
  *   { id, cmd: "arrivals", agency, stop, lim? }  // lim = how many arrivals to
  *                          // return (watch "load more"; phone caps it)
  *   { id, cmd: "fav",      a, c, n }   // toggle favorite (agency/code/name)
@@ -153,12 +155,21 @@ export const protocol = {
    * is the legacy watch-side favorites JSON string for one-time import.
    * Resolves to { rows: [...] }.
    */
-  nearbyStops(mig, fresh, expand) {
+  nearbyStops(mig, fresh) {
     const body = { cmd: "nearby" };
     if (mig) body.mig = mig;
     if (fresh) body.fresh = 1;   // bypass the phone's instant stale reply
-    if (expand) body.x = expand; // "load more": widen the search radius N steps
     return request(body);
+  },
+
+  /**
+   * Ask for the next page of farther stops ("load more"). off = how many
+   * non-favorite stops the watch already shows; the phone returns the stops
+   * beyond those for the watch to append. Resolves to { rows: [...] } (an
+   * empty array means there are no more stops).
+   */
+  moreStops(off) {
+    return request({ cmd: "nearby", off: off });
   },
 
   /**
