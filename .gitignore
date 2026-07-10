@@ -3,6 +3,7 @@ node_modules/
 dist/
 .DS_Store
 *.pbw
+*.png
 .env
 src/pkjs/localSecrets.js
 .lock-waf_linux_build
