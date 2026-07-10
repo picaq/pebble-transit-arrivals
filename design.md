@@ -85,6 +85,17 @@ Everything derives from `screen.width`/`screen.height` — keep it that way
 the arrivals loop only breaks when a row would overflow the screen, not
 when it would hit the footer.
 
+**Clock overlay** (all screens): the current time draws bottom-right on the
+same `screen.height − 18` line as the footer hint, right-aligned to
+`screen.width − 4`, in `fontSub`/`BLACK` over a white background box, and is
+drawn **last** in `draw()` so it hovers on top of any row or the favorite
+hint behind it (the box keeps it legible). On the LIST screen it can cover
+the tail of the bottom row; that overlap is intended. `updateClock()` is
+driven by `watch.addEventListener("secondchange", …)` and gated on the
+minute so it only reformats/redraws once a minute; `timeX` is remeasured
+in-frame (via the `timeDirty` flag) so steady-state draws still allocate
+nothing.
+
 ## 5. Static strings
 
 | Text | Where |
@@ -94,6 +105,7 @@ when it would hit the footer.
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
 | "Now" (arrival due) | `prepareArrivals()`, `main.js:234` |
+| Clock time (bottom-right, all screens; 12-hour, no leading zero, no AM/PM, e.g. "3:45") | `updateClock()`, `main.js` — see §4 clock overlay |
 | BART line names ("Green", "Yellow", "Red", "Orange", "Blue") | compressed to G/Y/R/O/B initials on the **phone** (`bartLineLetter()`, `transit511.js:231`) in **list subtitle tokens only** — the arrivals screen keeps the full name, drawn in the matching line color via the `k` code (see §3); "Beige" (Coliseum–OAK) passes through untouched |
 | Subtitle format `"SF · 320 m · IB/OB · 8,45,30+"` (agency · distance · direction(s) · serving lines, or `· no arrivals` when dimmed) | built on the **phone**, `buildRows()` + `dirLinesSuffix()` in `src/pkjs/index.js`; distance formatting in `formatDistM()` (meters under 1 km, else `x.y km`); direction/lines from the agency-wide stop-info map (`getStopInfo()`, `transit511.js`) — directions capped at 2, lines capped by a 14-char budget (`LINES_CHAR_BUDGET`; `+` marks more — all of BART's one-letter lines fit, four-char tokens cap around three), line tokens sliced to 4 chars |
 | Settings-page labels & descriptions (incl. "Favorite stops" section, "Hide favorites beyond (km)") | `src/pkjs/config.js`; dynamic favorites section built in `showConfiguration`, `index.js:118-138` |

@@ -106,7 +106,11 @@ const state = {
   arrivalsStatus: "Loading…",
   refreshTimer: null,
   nearbyPending: false,       // in-flight guard — see fetchNearby()
-  favPending: false           // in-flight guard for the favorite toggle
+  favPending: false,          // in-flight guard for the favorite toggle
+  timeStr: "",                // precomputed clock text (see updateClock)
+  timeMin: -1,                // last minute we formatted — gates reformat/redraw
+  timeX: 0,                   // cached right-aligned x for timeStr
+  timeDirty: false            // timeStr changed → remeasure timeX inside draw()
 };
 
 /* ------------------------------------------------------------------ list */
@@ -227,7 +231,39 @@ function draw() {
                       fontSub, GRAY, 6, render.height - 18);
     }
   }
+
+  // Clock overlay — bottom-right, on the footer/favorite-hint line, drawn last
+  // so it hovers on top of any row or hint behind it. A white box behind it
+  // keeps it legible over whatever it covers. timeX is remeasured only when
+  // the minute changes (timeDirty), in-frame, so steady-state draws allocate
+  // nothing (playbook §B).
+  if (state.timeStr) {
+    if (state.timeDirty) {
+      state.timeX = render.width - render.getTextWidth(state.timeStr, fontSub) - 4;
+      state.timeDirty = false;
+    }
+    const ty = render.height - 18;
+    render.fillRectangle(WHITE, state.timeX - 3, ty - 1, render.width - state.timeX + 3, 17);
+    render.drawText(state.timeStr, fontSub, BLACK, state.timeX, ty);
+  }
   render.end();
+}
+
+// Format the clock into state.timeStr and redraw, but only when the minute
+// actually changes — the "secondchange" listener calls this every second, so
+// the timeMin gate keeps us from reformatting/redrawing 59 times a minute for
+// nothing. new Date() is the only per-second allocation and it's outside the
+// draw path. 12-hour, no leading zero, no AM/PM (e.g. "3:45").
+function updateClock() {
+  const now = new Date();
+  const min = now.getMinutes();
+  if (min === state.timeMin) return;
+  state.timeMin = min;
+  let h = now.getHours() % 12;
+  if (h === 0) h = 12;
+  state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
+  state.timeDirty = true;
+  draw();
 }
 
 // Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
@@ -406,6 +442,11 @@ protocol.onSettingsChanged = () => {
 
 state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
 draw();
+
+// Clock: tick the bottom-right time. secondchange fires every second;
+// updateClock only reformats/redraws on the minute boundary (see its gate).
+watch.addEventListener("secondchange", updateClock);
+updateClock(); // paint the initial time now instead of waiting up to 60 s
 
 // The first nearby fetch is driven by the phone: pkjs sends a
 // SettingsChanged ping from its "ready" handler (see src/pkjs/index.js),
