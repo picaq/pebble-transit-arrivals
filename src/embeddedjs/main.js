@@ -33,8 +33,13 @@ const fontHeader = new render.Font("Gothic-Bold", 18);
 const fontRow = new render.Font("Gothic-Bold", 18);
 const fontSub = new render.Font("Gothic-Regular", 14);
 const fontBig = new render.Font("Leco-Bold", 26);
-const fontNow = new render.Font("Leco-Bold", 20); // "Now" label — 2/3 of fontBig; 20 is the closest valid Leco-Bold size
 const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arrivals screen
+// Minutes-column entries too wide for fontBig: the "Now" label and any 3-digit
+// wait (the column is only sized for "88" — see ARRIVAL_TEXT_X). Leco-Bold has
+// no size below 20, so narrowing means leaving Leco: Gothic's letterforms are
+// several pixels tighter than Leco's blocky caps. Same (family, size) as
+// fontLine, so share the object — a second Font would cost heap for nothing.
+const fontNarrow = fontLine;
 
 const BLACK = render.makeColor(0, 0, 0);
 const WHITE = render.makeColor(255, 255, 255);
@@ -103,6 +108,13 @@ const REVALIDATE_DELAY_MS = 5000;
 const LIST_TEXT_W = render.width - 12;
 const ARRIVAL_TEXT_X = 6 + render.getTextWidth("88", fontBig) + 8;
 const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
+// Header title budget. The title is centered, so this is what decides when a
+// stop name ellipsizes: 6 px of margin per side (same as the row margin), plus
+// room for the "…" busy indicator, which drawHeader() draws immediately after
+// the title and which must therefore fit inside the bar even at full width.
+const HEADER_PAD = 6;
+const HEADER_BUSY_W = render.getTextWidth("…", fontHeader) + 4;
+const HEADER_TEXT_W = render.width - 2 * HEADER_PAD - HEADER_BUSY_W;
 const HINT_IS_FAV = "★ hold Select to unfavorite";
 const HINT_NOT_FAV = "Select to ★ favorite";
 // Unfavoriting requires HOLDING Select this long (favoriting stays a tap —
@@ -123,7 +135,7 @@ const state = {
   sel: 0,                     // selected row index
   top: 0,                     // first visible row index (scroll window)
   stop: null,                 // stop shown on the ARRIVALS screen
-  stopTitle: "",              // precomputed header text for the ARRIVALS screen
+  stopTitle: undefined,       // ARRIVALS header text; undefined = needs fitting
   stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
   arrivals: [],               // [{line, dest, min, + display fields fitted in draw()}]
   arrTop: 0,                   // first visible arrival (scroll window)
@@ -216,8 +228,14 @@ function drawHeader(title, busy) {
   if (busy) render.drawText("…", fontHeader, WHITE, x + w + 4, 4);
 }
 
+// Truncation marker. A "." is several pixels narrower than a "…", and the
+// budget it costs is budget the text itself gets back — the point is fitting
+// more characters, not the glyph. (The "…" that drawHeader() and the status
+// strings use is a *busy* indicator, unrelated to truncation — leave it.)
+const TRUNC = ".";
+
 // Binary search the cut point instead of trimming one character at a time:
-// the naive loop did a fresh `str + "…"` concat AND a `str.slice()` on every
+// the naive loop did a fresh `str + TRUNC` concat AND a `str.slice()` on every
 // single character trimmed (dozens of throwaway string allocations for a
 // long name), called for every row on every draw(). On this watch's tiny
 // heap, that churn adds up across a session (more scrolling/refreshing,
@@ -229,14 +247,14 @@ function drawHeader(title, busy) {
 // results are cached on the row (see fitVisibleRows / the arrivals loop).
 function ellipsize(str, font, maxWidth) {
   if (render.getTextWidth(str, font) <= maxWidth) return str;
-  const budget = maxWidth - render.getTextWidth("…", font);
+  const budget = maxWidth - render.getTextWidth(TRUNC, font);
   let lo = 1, hi = str.length;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     if (render.getTextWidth(str.slice(0, mid), font) <= budget) lo = mid;
     else hi = mid - 1;
   }
-  return str.slice(0, lo) + "…";
+  return str.slice(0, lo) + TRUNC;
 }
 
 // Stamp the "…" refresh-pending indicator into the header band of the frame
@@ -283,6 +301,11 @@ function draw() {
       }
     }
   } else {
+    // Fit the stop name to the bar in-frame, once per stop (same lazy pattern
+    // as fitVisibleRows — measurement is only safe inside begin()/end()).
+    if (state.stop && state.stopTitle === undefined) {
+      state.stopTitle = ellipsize(state.stop.name, fontHeader, HEADER_TEXT_W);
+    }
     drawHeader(state.stop ? state.stopTitle : "Arrivals");
     if (!state.arrivals.length) {
       render.drawText(state.arrivalsStatus, fontSub, GRAY, 8, HEADER_H + 12);
@@ -382,14 +405,12 @@ function updateClock() {
 function prepareArrivals(list) {
   for (const a of list) {
     a.minStr = a.min <= 0 ? "Now" : String(a.min);
-    a.minFont = a.min <= 0 ? fontNow : fontBig;
+    // The phone does not cap `min`, so infrequent/late-night service really
+    // does send 100+; three Leco-Bold 26 digits run into the route text.
+    a.minFont = (a.min <= 0 || a.min > 99) ? fontNarrow : fontBig;
     a.lineColor = (a.k && LINE_COLOR_CODES[a.k]) || colorForLine(a.line);
   }
   return list;
-}
-
-function shortName(name) {
-  return name.length > 18 ? name.slice(0, 17) + "…" : name;
 }
 
 /* ------------------------------------------------------------- data flow */
@@ -533,7 +554,7 @@ function fetchMore() {
 function openArrivals(stop) {
   state.mode = MODE_ARRIVALS;
   state.stop = stop;
-  state.stopTitle = shortName(stop.name);
+  state.stopTitle = undefined;    // refitted in-frame by draw() (HEADER_TEXT_W)
   state.stopIsFav = stop.fav; // rows arrive flagged from the phone
   // Release the list rows' fitted text while this screen's refresh cycles
   // own the heap — draw() refits the visible rows on return. Frees ~1 KB
@@ -580,7 +601,9 @@ function fetchArrivals() {
     // manual refresh, "load more", and the 60 s auto-refresh alike.
     state.refreshing = true;
     state.arrivalsStatus = "Refreshing…"; // insurance if a draw slips in
-    drawHeaderBusy(state.stopTitle);
+    // stopTitle is fitted by the first draw() of this screen, which always
+    // precedes a refresh; fall back rather than drawText(undefined) if not.
+    drawHeaderBusy(state.stopTitle || "Arrivals");
     state.arrivals = [];
   }
   protocol.arrivals(requested.agency, requested.code, state.arrLimit)

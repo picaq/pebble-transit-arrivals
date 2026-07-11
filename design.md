@@ -42,8 +42,8 @@ fits text to the screen and handles buttons.
 | `fontRow` | Gothic-Bold 18 | List row title (stop name) |
 | `fontSub` | Gothic-Regular 14 | Subtitles, destination line, status text, footer hint |
 | `fontBig` | Leco-Bold 26 | Minutes number on arrivals rows |
-| `fontNow` | Leco-Bold 20 | The "Now" label (smaller so it fits the minutes column) |
 | `fontLine` | Gothic-Bold 24 | Route/line number on arrivals rows |
+| `fontNarrow` | Gothic-Bold 24 | Minutes-column entries that don't fit `fontBig`: the "Now" label and any wait of 100+ minutes (the column is sized for `"88"` — see `ARRIVAL_TEXT_X` in §4; three Leco-Bold 26 digits run into the route text, and the phone never caps `min`). Was Leco-Bold 20, but Leco-Bold has no size below 20 (playbook §A), so narrowing it meant leaving Leco — Gothic's letterforms are a few px tighter than Leco's blocky caps. Aliases the `fontLine` object (same family/size) instead of allocating a second Font |
 
 Available families: Gothic (regular/bold), Bitham, Roboto, Leco (best for
 numbers), Droid — **only specific sizes exist per family** (constraint 2
@@ -72,11 +72,14 @@ white text.
 | Constant | Value | Meaning |
 |---|---|---|
 | `HEADER_H` | 28 px | Header bar height (fits Gothic-Bold 18 at y=4) |
+| `HEADER_PAD` | 6 px | Side margin inside the blue bar, matching the row margin |
+| `HEADER_BUSY_W` | derived | Width of the "…" refresh indicator + gap. Reserved out of the title budget because `drawHeader()` draws it *after* the centered title, so a full-width title would otherwise push it off the bar |
+| `HEADER_TEXT_W` | derived | `screen.width − 2·HEADER_PAD − HEADER_BUSY_W` — the header title's ellipsize budget. The title is centered, so this alone decides when a stop name truncates |
 | `ROW_H` | 40 px | List row height (title at y+2, subtitle at y+22) |
 | `ARRIVAL_ROW_H` | 44 px | Arrivals row height (line at y, dest at y+26) |
 | `VISIBLE_ROWS` | derived | `floor((screen.height − HEADER_H) / ROW_H)` |
 | `LIST_TEXT_W` | derived | `screen.width − 12` — list text budget before ellipsizing |
-| `ARRIVAL_TEXT_X` | derived | Minutes-column width: width of "88" in `fontBig` + margins |
+| `ARRIVAL_TEXT_X` | derived | Minutes-column width: width of "88" in `fontBig` + margins. Only two `fontBig` digits fit — anything wider ("Now", a 100+ minute wait) draws in `fontNarrow` instead of widening the column, so the route/destination text keeps its budget |
 | `ARRIVAL_TEXT_W` | derived | Remaining width for line/destination text |
 
 Everything derives from `screen.width`/`screen.height` — keep it that way
@@ -218,7 +221,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 |---|---|---|
 | Nearby stop name | 28 chars (16 when >8 stops selected) | `transit511.js:213`, `:194` |
 | Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss) | `transit511.js:321`, `buildRows()` |
-| Arrivals header (stop name) | 18 chars | `shortName()`, `main.js:243` |
+| Arrivals header (stop name) | none — fitted to pixels (`HEADER_TEXT_W`), not chars. Was an 18-char cap (`shortName()`), which ellipsized names long before they reached the edges of the bar; the phone already caps names at 28/24 chars (rows above), so the header string stays bounded without it | fitted in `draw()`, `main.js` |
 | Route/line | 10 chars (BART: 1-letter initials in list subtitles only, see §5) | `transit511.js:423` |
 | Destination | 24 chars | `transit511.js:428` |
 
@@ -228,6 +231,12 @@ is in the visible scroll window and released once it scrolls away** — both
 screens; a permanent cache retained ~1 KB of fitted duplicates on a full
 list and crashed a refresh parse, playbook §B eighth recurrence). Raising
 the phone-side caps raises payload size — re-check the 880 B budget in §9.
+
+The truncation marker is a **period** (`TRUNC`, `main.js`), not an ellipsis:
+the marker's width comes out of the text's budget, and a "." is several
+pixels narrower than a "…", so more of the name survives. This is *not* the
+same glyph as the "…" busy indicator in §5 — that one means "refresh in
+flight" and stays an ellipsis.
 
 ## 11. Settings (Clay — `src/pkjs/config.js`, defaults `index.js:28-34`)
 
