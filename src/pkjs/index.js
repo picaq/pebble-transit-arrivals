@@ -156,6 +156,13 @@ var ROWS_STALE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
 // the next screenful.
 var MORE_RADIUS_M = 5000;
 var MORE_PAGE = 8;
+// Wire budget for "load more" pages — much tighter than the 880 B page-0
+// budget. A load-more response is the ONE payload the watch must parse
+// beside a retained full list (appending is its purpose), and the measured
+// worst-case free chunk at that moment is ~750 B with a parse costing ~2×
+// wire size (playbook §B, thirteenth recurrence). ~400 B ≈ 5 stops/page;
+// the watch just asks again for the next page.
+var MORE_BUDGET = 400;
 
 function loadRowsCache() {
   try {
@@ -294,7 +301,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 
 /* --------------------------------------------------------- watch requests */
 
-function respond(id, body) {
+function respond(id, body, budget) {
   body.id = id;
   var payload = JSON.stringify(body);
   // The rows payload budget is enforced HERE, on the final wire payload.
@@ -302,12 +309,16 @@ function respond(id, body) {
   // cache-served replies) were appended — the overhead pushed an exactly-
   // budgeted list to 884 B on the wire and the watch crashed "memory full"
   // parsing it (playbook §B, seventh recurrence). Farthest nearby stops
-  // shed first (rows arrive sorted); favorites are never shed.
+  // shed first (rows arrive sorted); favorites are never shed. Callers can
+  // pass a tighter budget: "load more" pages must fit MORE_BUDGET because
+  // they are the one response that parses beside a retained full list
+  // (thirteenth recurrence).
   if (body.type === "rows" && body.rows && body.rows.length) {
+    var cap = budget || 880;
     var rows = body.rows;
     var favCount = 0;
     for (var i = 0; i < rows.length; i++) if (rows[i].f) favCount++;
-    while (payload.length > 880 && rows.length > Math.max(favCount, 1)) {
+    while (payload.length > cap && rows.length > Math.max(favCount, 1)) {
       rows.pop();
       payload = JSON.stringify(body);
     }
@@ -498,8 +509,8 @@ function buildMoreRows(req, lat, lon, settings) {
       });
       rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
       var body = { type: "rows", rows: rows };
-      // Budgeted to 880 B in respond() (sheds in place, so log after).
-      respond(req.id, body);
+      // Budgeted to MORE_BUDGET in respond() (sheds in place, so log after).
+      respond(req.id, body, MORE_BUDGET);
       console.log("more rows: " + rows.length + " beyond off " + req.off);
     };
 

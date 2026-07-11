@@ -87,6 +87,13 @@ const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
 // parse-and-rebuild cycles a second and crashed the heap (playbook §B,
 // seventh recurrence). A cooldown is required alongside every guard.
 const REFRESH_COOLDOWN_MS = 3000;
+// How long after showing a stale list to run the fresh revalidation. It used
+// to fire the instant the stale reply landed — which put a third full parse
+// into the busiest second of the app's life (boot: stale parse + the user
+// already opening a stop), beside data it had no room next to (playbook §B,
+// eleventh recurrence). Deferred, it runs through the frame-hold refresh
+// path instead, and only when the list screen is idle.
+const REVALIDATE_DELAY_MS = 5000;
 
 // draw() must stay ALLOCATION-FREE (docs/WATCH-DEBUGGING-PLAYBOOK.md §B):
 // string churn in the render path fragments this watch's tiny heap until an
@@ -123,11 +130,12 @@ const state = {
   moreExhausted: false,       // list "load more" reached the end (no more stops)
   favPending: false,          // in-flight guard for the favorite toggle
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
-  refreshing: false,          // pull-to-refresh frame-hold: rows are RELEASED
-                              // (heap!) but the last frame stays on screen with
-                              // a "…" header indicator; draw() must not run
-                              // until the fresh response lands (see draw gate
-                              // in updateClock and the Up handler)
+  revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
+  refreshing: false,          // frame-hold (both screens): display data is
+                              // RELEASED (heap!) but the last frame stays on
+                              // screen with a "…" header indicator; draw()
+                              // no-ops until whoever clears the flag repaints
+                              // (gate at the top of draw())
   timeStr: "",                // precomputed clock text (see updateClock)
   minStamp: -1,               // last integer minute stamp — gates reformat/redraw
   timeX: 0,                   // cached right-aligned x for timeStr
@@ -219,7 +227,23 @@ function ellipsize(str, font, maxWidth) {
   return str.slice(0, lo) + "…";
 }
 
+// Stamp the "…" refresh-pending indicator into the header band of the frame
+// already on screen (partial Poco update — everything outside the band is
+// untouched). Used by the frame-hold flow: this is the ONLY paint that may
+// run while state.refreshing holds the frame.
+function drawHeaderBusy(title) {
+  render.begin(0, 0, render.width, HEADER_H);
+  drawHeader(title, true);
+  render.end();
+}
+
 function draw() {
+  // Frame-hold gate (playbook §B, ninth/tenth recurrences): while a refresh
+  // is in flight the display data is RELEASED (that's what lets the response
+  // parse) and only the framebuffer still shows it — any repaint would blank
+  // the screen. Gating here covers every draw path at once; whoever clears
+  // state.refreshing must draw() the fresh data.
+  if (state.refreshing) return;
   render.begin();
   render.fillRectangle(WHITE, 0, 0, render.width, render.height);
 
@@ -337,10 +361,7 @@ function updateClock() {
   if (h === 0) h = 12;
   state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
   state.timeDirty = true;
-  // Frame-hold: mid pull-to-refresh the rows are released but their pixels
-  // are still on screen — a redraw here would blank the list. Skip; the
-  // fresh clock text lands with the redraw when the response arrives.
-  if (!state.refreshing) draw();
+  draw(); // no-ops during a frame-hold (gate inside draw)
 }
 
 // Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
@@ -394,7 +415,12 @@ function fetchNearby(fresh) {
       setRowsFromResponse(resp.rows || []);
       state.status = state.rows.length ? "" : "No stops nearby";
       draw();
-      if (isStale) fetchNearby(true); // revalidate the instant list once
+      // Revalidate the instant list — DEFERRED, not immediately: the fresh
+      // response used to land ~1 s after boot and parse beside the stale
+      // rows (and the arrivals of whatever stop the user had already
+      // opened), with the chunk pool still ungrown — captured twice at
+      // 172-340 B free (playbook §B, eleventh recurrence).
+      if (isStale) scheduleRevalidate();
     })
     .catch(err => {
       state.nearbyPending = false;
@@ -405,6 +431,40 @@ function fetchNearby(fresh) {
         draw();
       }
     });
+}
+
+// Frame-hold refresh of the list (pull-to-refresh and the deferred stale
+// revalidation): stamp the "…" indicator into the header band, release the
+// rows — the framebuffer keeps the pixels, and the released ~1.2 KB+ is what
+// lets the fresh response parse (a rows parse needs >1.6 KB of chunk,
+// playbook §B ninth recurrence) — then fetch fresh. draw() self-gates on
+// state.refreshing until the response lands. Callers ensure !nearbyPending.
+function refreshList() {
+  if (state.revalTimer) { // any fresh fetch satisfies a pending revalidation
+    Timer.clear(state.revalTimer);
+    state.revalTimer = null;
+  }
+  if (state.rows.length) {
+    state.refreshing = true;
+    state.status = "Refreshing…"; // insurance if a draw slips in
+    drawHeaderBusy("Transit Glance");
+    state.rows = [];
+    state.sel = 0;
+    state.top = 0;
+  }
+  fetchNearby(true);
+}
+
+// Deferred stale-list revalidation (see REVALIDATE_DELAY_MS): waits until the
+// LIST screen is idle, retrying while the user is elsewhere — so the fresh
+// parse lands beside a released list, never beside arrivals or boot churn.
+function scheduleRevalidate() {
+  if (state.revalTimer) Timer.clear(state.revalTimer);
+  state.revalTimer = Timer.set(() => {
+    state.revalTimer = null;
+    if (state.mode === MODE_LIST && !state.nearbyPending) refreshList();
+    else scheduleRevalidate(); // busy or on another screen — try again later
+  }, REVALIDATE_DELAY_MS);
 }
 
 // "Load more stops": append the next page of farther non-favorite stops. The
@@ -454,8 +514,11 @@ function openArrivals(stop) {
   state.arrLimit = ARR_DEFAULT;   // reset "load more" growth per stop
   // Reset the guard so a still-in-flight request for a previous stop can't
   // block this screen's first fetch (its late response is ignored by the
-  // identity check in fetchArrivals).
+  // identity check in fetchArrivals). Same for a frame-hold left by that
+  // request — this screen draws fresh content now, so the hold must not
+  // survive the transition (draw() would stay gated forever).
   state.arrivalsPending = false;
+  state.refreshing = false;
   state.arrivalsStatus = "Loading…";
   draw();
   fetchArrivals();
@@ -476,9 +539,21 @@ function fetchArrivals() {
   if (!state.stop || state.arrivalsPending) return;
   state.arrivalsPending = true;
   const requested = state.stop;
+  if (state.arrivals.length) {
+    // Frame-hold, arrivals flavor (playbook §B, tenth recurrence): a 10-
+    // arrival response parses beside the retained current list otherwise —
+    // the same >1.6 KB-spike-beside-retained-data arithmetic that crashed
+    // the list screen. Release before requesting; pixels stay up. Covers
+    // manual refresh, "load more", and the 60 s auto-refresh alike.
+    state.refreshing = true;
+    state.arrivalsStatus = "Refreshing…"; // insurance if a draw slips in
+    drawHeaderBusy(state.stopTitle);
+    state.arrivals = [];
+  }
   protocol.arrivals(requested.agency, requested.code, state.arrLimit)
     .then(resp => {
       state.arrivalsPending = false;
+      state.refreshing = false; // release the hold before any early return
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       state.arrivals = prepareArrivals(resp.arrivals || []);
       // Keep the scroll window valid if a refresh returned fewer rows.
@@ -488,6 +563,7 @@ function fetchArrivals() {
     })
     .catch(err => {
       state.arrivalsPending = false;
+      state.refreshing = false; // release the hold before any early return
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       console.log("arrivals failed: " + err.message);
       if (!state.arrivals.length) {
@@ -509,6 +585,10 @@ function closeArrivals() {
   state.mode = MODE_LIST;
   state.stop = null;
   state.arrivals = [];
+  // Back during an arrivals frame-hold: the hold belongs to the screen we
+  // are leaving — clear it or this draw() (and every one after) no-ops.
+  // The abandoned request's late response is ignored by its identity check.
+  state.refreshing = false;
   draw();
 }
 
@@ -529,23 +609,7 @@ new Button({
           // released below, so there is nothing to revalidate and the stale
           // echo would just add a second parse. Cooldown: REFRESH_COOLDOWN_MS.
           state.refrOkAt = Date.now() + REFRESH_COOLDOWN_MS;
-          if (!state.nearbyPending) { // else in flight: don't repaint, don't fetch
-            if (state.rows.length) {
-              // Frame-hold refresh: paint ONE frame with the "…" header
-              // indicator while the rows still exist, then release them —
-              // the framebuffer keeps the pixels, and the released ~1.2 KB+
-              // is what lets the fresh response parse (a rows parse needs
-              // >1.6 KB of chunk, playbook §B ninth recurrence). draw() is
-              // suppressed until the response lands (updateClock gate;
-              // other draw paths are no-ops while rows is empty).
-              state.refreshing = true;
-              draw();
-              state.rows = [];
-              state.sel = 0;
-              state.top = 0;
-            }
-            fetchNearby(true);
-          }
+          if (!state.nearbyPending) refreshList(); // else in flight: no-op
         }
       } else if (type === "down") {
         if (state.sel < state.rows.length - 1) {

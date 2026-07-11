@@ -48,6 +48,10 @@
  * Keep payloads SMALL (< ~1 KB). The phone side truncates names and caps
  * list lengths for this reason. If you ever need bigger payloads, add a
  * chunking layer (seq/total fields) rather than raising the caps.
+ *
+ * Requests are SERIALIZED: exactly one on the wire at a time; the rest wait
+ * in the queue (see flushQueue). Concurrent cycles pin live memory and have
+ * crashed the watch (playbook §B, twelfth recurrence).
  */
 
 import Message from "pebble/message";
@@ -55,8 +59,9 @@ import Timer from "timer";
 
 let nextId = 1;
 let writable = false;
-const pending = new Map();   // id -> { resolve, reject, timer }
-const queue = [];            // requests made before the channel is writable
+let inFlight = false;        // a request has been written and awaits its response
+const pending = new Map();   // id -> { resolve, reject, timer, sent }
+const queue = [];            // {id, payload} awaiting the channel AND their turn
 
 const REQUEST_TIMEOUT_MS = 15000;
 
@@ -100,26 +105,41 @@ function handleResponse(raw) {
   }
   const entry = pending.get(data.id);
   if (!entry) {
-    // Unsolicited or late response — ignore.
+    // Unsolicited or late response — its timeout already released the
+    // channel (see below); nothing to do.
     return;
   }
   pending.delete(data.id);
   if (entry.timer) Timer.clear(entry.timer);
+  if (entry.sent) inFlight = false; // this cycle is done — the wire is free
   if (data.type === "error") {
     entry.reject(new Error(data.message || "unknown error"));
   } else {
     entry.resolve(data);
   }
+  flushQueue(); // send the next queued request, if any
 }
 
+// STRICTLY ONE request on the wire at a time (playbook §B, twelfth
+// recurrence): each in-flight cycle pins live memory — promise handlers,
+// timeout timer, payload, then the response string and its parse — and
+// different request types (nearby/arrivals/fav) have separate caller-side
+// guards, so a fast user could still overlap three cycles inside the boot
+// second and abort the VM. Serializing here converts that pileup into a few
+// hundred ms of queueing latency. Do not "optimize" this back to concurrent
+// writes.
 function flushQueue() {
-  while (writable && queue.length) {
-    const payload = queue.shift();
+  while (writable && !inFlight && queue.length) {
+    const next = queue.shift();
+    const entry = pending.get(next.id);
+    if (!entry) continue; // timed out while queued — don't waste the wire
     try {
-      message.write(new Map([["Request", payload]]));
+      message.write(new Map([["Request", next.payload]]));
+      entry.sent = true;
+      inFlight = true;
     } catch (e) {
       // Channel got busy again; put it back and wait for next onWritable.
-      queue.unshift(payload);
+      queue.unshift(next);
       break;
     }
   }
@@ -135,12 +155,18 @@ function request(body) {
     const payload = JSON.stringify(body);
 
     const timer = Timer.set(() => {
+      const entry = pending.get(id);
       pending.delete(id);
+      // If it was on the wire, the wire is free again (a late response is
+      // ignored by handleResponse); if it was still queued, flushQueue
+      // drops it when its turn comes.
+      if (entry && entry.sent) inFlight = false;
       reject(new Error("timed out"));
+      flushQueue();
     }, REQUEST_TIMEOUT_MS);
 
-    pending.set(id, { resolve, reject, timer });
-    queue.push(payload);
+    pending.set(id, { resolve, reject, timer, sent: false });
+    queue.push({ id: id, payload: payload });
     flushQueue();
   });
 }

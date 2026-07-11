@@ -216,6 +216,86 @@ established on real hardware in this repo:
   the crash persists, the next fix must come from the measured numbers,
   not another plausible mechanism — that's the two-fix rule's actual
   meaning.
+- **Tenth recurrence (2026-07-10, evening): the arrivals screen had the
+  same parse-beside-retained-data fault the list had.** Repro: "load
+  more" to 10 arrivals, scroll to top, refresh — the response parsed
+  beside the retained 10-arrival list and faulted, exactly the ninth
+  recurrence's arithmetic on the other screen. Fix: the frame-hold was
+  generalized — `draw()` now **self-gates** on `state.refreshing` (one
+  gate covers every draw path instead of auditing each caller),
+  `drawHeaderBusy()` stamps the "…" indicator with a partial Poco update
+  of just the header band, and `fetchArrivals()` releases the arrivals
+  before every request (manual, "load more", and the 60 s auto-refresh).
+  Screen transitions (`openArrivals`, `closeArrivals`) clear the hold, or
+  an ignored late response would leave draw() gated forever. Lesson:
+  when a memory defense is added to one screen, **grep for the sibling
+  screen with the same data flow before the user finds it** — every
+  request/response surface needs the same release-before-parse shape.
+- **Eleventh recurrence (2026-07-10, night, captured twice): the stale-
+  list revalidation raced the user's navigation — crash ~1 s after
+  launch whenever the user selected a stop quickly, regardless of the
+  stop.** Boot sequence both times: stale rows reply (815 B) parsed →
+  user opened a stop → arrivals parsed → then the **immediate fresh:1
+  revalidation response** (805 B) parsed beside the retained stale rows
+  AND the arrivals, one second into boot with the chunk pool still
+  ungrown — instruments showed 172-340 B chunk free and 30+ GCs in that
+  second. Fix: the revalidation is **deferred** (`REVALIDATE_DELAY_MS`,
+  5 s) and runs through the frame-hold `refreshList()` path (rows
+  released before the parse), retrying while the user is off the list
+  screen or a request is in flight; any manual fresh refresh cancels it.
+  Lessons: (1) a background refresh that "just replaces the data" is a
+  full parse cycle and needs the same release-before-parse shape as a
+  user-triggered one; (2) launch is the heap's worst second (pools
+  ungrown, everything parsing at once) — don't schedule optional work
+  into it.
+- **Twelfth recurrence (2026-07-10, night): three DIFFERENT request types
+  overlapped in the boot second — per-action guards don't compose into a
+  global limit.** Repro: launch → Select into a stop → Select again to
+  favorite it, all within ~1 s: stale rows parse (877 B) + arrivals cycle
+  (388 B) + fav cycle ran concurrently with the VM pools still ungrown,
+  and the abort landed around a **29-byte** fav response — proof that no
+  payload was the problem; the overlapping cycles' pinned memory was.
+  (The deferred revalidation from the eleventh fix verifiably did not
+  fire — this was a user-manufactured pileup.) Fix: protocol.js now
+  **serializes all requests** — exactly one on the wire at a time
+  (`inFlight` + the queue; timeouts release the wire, late responses
+  don't double-release, requests that time out while queued are dropped
+  unsent). Mashing now costs queueing latency, never memory. Lesson:
+  per-action in-flight guards (`arrivalsPending`, `favPending`, …) bound
+  each button, but a fast user IS the concurrency — the transport must
+  enforce the global one-cycle rule itself.
+- **Thirteenth recurrence (2026-07-10, late night): the "load more" page
+  is the one response that MUST parse beside a retained list — so its
+  size, not the list's, is the variable to cut.** Captured: a 773 B
+  more-rows page faulted with 748 B of chunk free beside the ~10-row
+  list. Appending can't use the frame-hold (release-then-reload) shape —
+  the existing rows are the point. Fix (phone-only): `respond()` takes a
+  per-call budget and `buildMoreRows` passes `MORE_BUDGET` = 400 B, sized
+  from the measured numbers (~750 B worst-case free chunk at load-more
+  time, parse ≈ 2× wire) — ~5 stops per page, one more Down press to
+  reach the cap. Lesson: for every response type, ask "what is retained
+  while THIS parses?" — pages that append must fit the headroom that
+  exists *with* the data they're joining, not the boot headroom.
+- **Fourteenth recurrence (2026-07-10, end of session) — THE ENDPOINT: the
+  arena itself ran out, and the defenses helped spend it.** A 391 B
+  arrivals response faulted with 1.6 KB of chunk free but **688 B of slot
+  free and 164 B of unallocated arena** (chunk 5,996 + slot 20,464 + stack
+  6,144 = 32,604 of 32,768) — the slot pool needed to grow and could not.
+  Slot capacity ratcheted up build-over-build within one evening (18,416 →
+  19,440 → 20,464) as recurrences 7-13 were fixed: **defense code is
+  bytecode and interned keys in the same arena as the heap** (keys count
+  123 → 133 across the session). Each fix verifiably removed its trigger;
+  their sum consumed the margin. When chunk is defended, the crash moves
+  to slots — at arena saturation the failing pool is just whichever
+  allocator asks next. **Rule: once the carved arena approaches 32 KB with
+  pools near-full at idle, STOP writing watch-side defenses.** The levers
+  left are firmware ≥ v4.21.0 (72 KB VM via mdbl.c — ends this entire
+  §B recurrence class) or *removing* embedded code, not adding it.
+  Open question for post-firmware: in this capture an arrivals request
+  went ~12 s with no pkjs response logged before the crash sequence — if
+  unanswered requests recur, investigate AppMessage loss; under the
+  serialized protocol a lost response holds the wire for the full 15 s
+  timeout and queues everything behind it.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
