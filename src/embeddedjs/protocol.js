@@ -96,6 +96,14 @@ const message = new Message({
 });
 
 function handleResponse(raw) {
+  // Last-moment release hook: give main.js one synchronous callback BEFORE
+  // the parse spike (a rows parse needs >1.6 KB of chunk and must land
+  // beside released data — playbook §B, ninth recurrence). Requests are
+  // serialized, so main.js knows exactly which cycle this response answers
+  // without parsing it. Nothing can draw between this call and the promise
+  // handler (jobs run before the event loop turns), so the framebuffer
+  // keeps showing whatever the hook releases.
+  if (protocol.onBeforeParse) protocol.onBeforeParse();
   let data;
   try {
     data = JSON.parse(raw);
@@ -174,6 +182,13 @@ function request(body) {
 export const protocol = {
   /** Optional hook: set to a function to be told when phone settings changed. */
   onSettingsChanged: null,
+
+  /**
+   * Optional hook: called synchronously just before a response is parsed,
+   * so the caller can release retained display data ahead of the parse
+   * spike (see handleResponse).
+   */
+  onBeforeParse: null,
 
   /**
    * Ask the phone for the display-ready stop list (favorites + nearby). The

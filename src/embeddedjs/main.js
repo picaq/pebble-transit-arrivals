@@ -137,11 +137,17 @@ const state = {
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
   revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
   selTimer: null,             // armed while Select is held on a ★ stop; fires the unfavorite
-  refreshing: false,          // frame-hold (both screens): display data is
+  refreshing: false,          // frame-hold (ARRIVALS screen): display data is
                               // RELEASED (heap!) but the last frame stays on
                               // screen with a "…" header indicator; draw()
                               // no-ops until whoever clears the flag repaints
                               // (gate at the top of draw())
+  listRefreshing: false,      // LIST refresh in flight: rows stay LIVE (the
+                              // list scrolls/selects normally, header shows
+                              // "…"); they are released at the last moment,
+                              // in protocol.onBeforeParse, so the response
+                              // still parses beside freed heap (playbook §B,
+                              // ninth recurrence — the parse needs >1.6 KB)
   timeStr: "",                // precomputed clock text (see updateClock)
   minStamp: -1,               // last integer minute stamp — gates reformat/redraw
   timeX: 0,                   // cached right-aligned x for timeStr
@@ -235,8 +241,8 @@ function ellipsize(str, font, maxWidth) {
 
 // Stamp the "…" refresh-pending indicator into the header band of the frame
 // already on screen (partial Poco update — everything outside the band is
-// untouched). Used by the frame-hold flow: this is the ONLY paint that may
-// run while state.refreshing holds the frame.
+// untouched). Used when a refresh starts on either screen; during an
+// ARRIVALS frame-hold this is the ONLY paint that may run.
 function drawHeaderBusy(title) {
   render.begin(0, 0, render.width, HEADER_H);
   drawHeader(title, true);
@@ -244,10 +250,12 @@ function drawHeaderBusy(title) {
 }
 
 function draw() {
-  // Frame-hold gate (playbook §B, ninth/tenth recurrences): while a refresh
-  // is in flight the display data is RELEASED (that's what lets the response
-  // parse) and only the framebuffer still shows it — any repaint would blank
-  // the screen. Gating here covers every draw path at once; whoever clears
+  // Frame-hold gate (playbook §B, tenth recurrence — ARRIVALS refreshes
+  // only; the list keeps its rows live and releases them in
+  // protocol.onBeforeParse instead): while an arrivals refresh is in flight
+  // the arrivals are RELEASED (that's what lets the response parse) and only
+  // the framebuffer still shows them — any repaint would blank the screen.
+  // Gating here covers every draw path at once; whoever clears
   // state.refreshing must draw() the fresh data.
   if (state.refreshing) return;
   render.begin();
@@ -255,7 +263,7 @@ function draw() {
 
   if (state.mode === MODE_LIST) {
     fitVisibleRows(); // no-op once the visible rows are fitted
-    drawHeader("Transit Glance", state.refreshing);
+    drawHeader("Transit Glance", state.listRefreshing);
     if (!state.rows.length) {
       render.drawText(state.status, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
@@ -398,19 +406,26 @@ let migFavs = localStorage.getItem("favorites.v1");
 // fresh: bypass the phone's instant stale reply (the revalidation follow-up).
 // The phone answers a plain request instantly from its cached list (stale:1);
 // we show it, then fire one fresh:1 follow-up here to replace it with live
-// data. Only blank to "Finding stops…" when we have nothing to show, so a
-// revalidate never wipes the list the user is looking at.
+// data.
+// With rows on screen, the ONLY visible change until the response lands is
+// the header "…" indicator — the rows stay LIVE and the list keeps
+// scrolling/selecting normally (blocking input for the round trip was bad
+// UX). The memory invariant still holds: protocol.onBeforeParse (below)
+// releases the rows at response arrival, just before the parse spike.
 function fetchNearby(fresh) {
   if (state.nearbyPending) return;
   state.nearbyPending = true;
-  if (!state.rows.length && !state.refreshing) { // hold the frame mid-refresh
+  if (state.rows.length) {
+    state.listRefreshing = true;
+    drawHeaderBusy("Transit Glance");
+  } else {
     state.status = "Finding stops…";
     draw();
   }
   protocol.nearbyStops(migFavs, fresh)
     .then(resp => {
       state.nearbyPending = false;
-      state.refreshing = false;
+      state.listRefreshing = false;
       const isStale = !!resp.stale;
       // Migration completes only on a real (non-stale) response — the stale
       // reply is served before the phone imports anything.
@@ -430,33 +445,45 @@ function fetchNearby(fresh) {
     })
     .catch(err => {
       state.nearbyPending = false;
-      state.refreshing = false; // release the frame-hold: show the error
+      state.listRefreshing = false;
       console.log("nearby failed: " + err.message);
       if (!state.rows.length) {
+        // Rows are empty (boot, or the phone answered an error AFTER the
+        // pre-parse hook released them) — show the error.
         state.status = "Error: " + err.message;
-        draw();
       }
+      // A timeout never reached the hook, so the rows are still live —
+      // this repaint just clears the header "…".
+      draw();
     });
 }
 
-// Frame-hold refresh of the list (pull-to-refresh and the deferred stale
-// revalidation): stamp the "…" indicator into the header band, release the
-// rows — the framebuffer keeps the pixels, and the released ~1.2 KB+ is what
-// lets the fresh response parse (a rows parse needs >1.6 KB of chunk,
-// playbook §B ninth recurrence) — then fetch fresh. draw() self-gates on
-// state.refreshing until the response lands. Callers ensure !nearbyPending.
+// Last-moment rows release (see fetchNearby): fires when a response has
+// ARRIVED, synchronously before protocol.js parses it. Requests are
+// serialized, so while listRefreshing is set the next response is normally
+// the list's own — releasing here frees the ~1.2 KB+ the parse needs
+// (playbook §B, ninth recurrence) while the framebuffer keeps showing the
+// old rows for the few ms until the .then handler repaints. (If the list
+// request queued behind an abandoned earlier cycle, this fires on that
+// response instead — releasing a round trip early is memory-safe and the
+// rows rebuild when the list response lands right after.)
+protocol.onBeforeParse = () => {
+  if (state.listRefreshing) {
+    state.rows = [];
+    state.sel = 0;
+    state.top = 0;
+    state.status = "Refreshing…"; // insurance if a draw slips in
+  }
+};
+
+// Fresh reload of the list (pull-to-refresh and the deferred stale
+// revalidation). The rows stay live and interactive while the request is
+// out — fetchNearby stamps the "…" indicator and arms the last-moment
+// release above. Callers ensure !nearbyPending.
 function refreshList() {
   if (state.revalTimer) { // any fresh fetch satisfies a pending revalidation
     Timer.clear(state.revalTimer);
     state.revalTimer = null;
-  }
-  if (state.rows.length) {
-    state.refreshing = true;
-    state.status = "Refreshing…"; // insurance if a draw slips in
-    drawHeaderBusy("Transit Glance");
-    state.rows = [];
-    state.sel = 0;
-    state.top = 0;
   }
   fetchNearby(true);
 }
@@ -641,8 +668,9 @@ new Button({
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
         else if (Date.now() >= state.refrOkAt) {
           // At the top: pull-to-refresh. fresh:1 always — the list data is
-          // released below, so there is nothing to revalidate and the stale
-          // echo would just add a second parse. Cooldown: REFRESH_COOLDOWN_MS.
+          // replaced wholesale, so the stale echo would just add a second
+          // parse. Cooldown: REFRESH_COOLDOWN_MS. The list stays scrollable
+          // and selectable while the request is out (header shows "…").
           state.refrOkAt = Date.now() + REFRESH_COOLDOWN_MS;
           if (!state.nearbyPending) refreshList(); // else in flight: no-op
         }

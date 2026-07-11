@@ -209,7 +209,16 @@ established on real hardware in this repo:
   the rows — Poco only repaints on `begin()/end()`, so the framebuffer
   keeps showing the old list while its heap is already free; every draw()
   path must be suppressed until the response lands, or the hold blanks.
-  Same memory math, no visible blanking.) Lessons: (1) budget ~2× the
+  Same memory math, no visible blanking. Refined AGAIN 2026-07-11 for the
+  list screen after the user rejected the frozen input: the invariant is
+  release-before-**parse**, not release-before-*request* — with protocol.js
+  serializing requests, a `protocol.onBeforeParse` hook fires when the
+  response has arrived, synchronously before `JSON.parse`, and releases the
+  rows there. The list stays live and scrollable for the whole round trip;
+  peak coexistence is rows + the ≤880 B wire string, which was never the
+  crash point — the crash was always the parse spike beside retained rows.
+  The ARRIVALS screen keeps the request-time frame-hold.) Lessons: (1)
+  budget ~2× the
   wire size in free chunk for any watch-side JSON parse, and if that isn't
   reliably available, **free the old data before the new data arrives**
   rather than replace-then-collect; (2) when a fix is verified working but
