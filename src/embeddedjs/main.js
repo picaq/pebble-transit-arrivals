@@ -103,8 +103,13 @@ const REVALIDATE_DELAY_MS = 5000;
 const LIST_TEXT_W = render.width - 12;
 const ARRIVAL_TEXT_X = 6 + render.getTextWidth("88", fontBig) + 8;
 const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
-const HINT_IS_FAV = "★ favorited — Select to remove";
+const HINT_IS_FAV = "★ hold Select to unfavorite";
 const HINT_NOT_FAV = "Select to ★ favorite";
+// Unfavoriting requires HOLDING Select this long (favoriting stays a tap —
+// it's harmless and reversible; accidental unfavorites are what stung).
+// Fires AT the threshold, mid-hold, via a timer — the footer flips while
+// the button is still down, so the user knows it took before releasing.
+const LONGPRESS_MS = 500;
 
 /* ----------------------------------------------------------------- state */
 
@@ -131,6 +136,7 @@ const state = {
   favPending: false,          // in-flight guard for the favorite toggle
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
   revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
+  selTimer: null,             // armed while Select is held on a ★ stop; fires the unfavorite
   refreshing: false,          // frame-hold (both screens): display data is
                               // RELEASED (heap!) but the last frame stays on
                               // screen with a "…" header indicator; draw()
@@ -580,6 +586,27 @@ function stopRefreshTimer() {
   }
 }
 
+// Toggle the current stop's favorite state on the phone (which owns the
+// list). In-flight guard so repeated triggers can't stack request cycles
+// (playbook §B). Callers decide the gesture: tap to favorite, long-press
+// to unfavorite (see the button handler).
+function toggleFav() {
+  if (!state.stop || state.favPending) return;
+  state.favPending = true;
+  const stop = state.stop;
+  protocol.toggleFav(stop.agency, stop.code, stop.name)
+    .then(resp => {
+      state.favPending = false;
+      stop.fav = !!resp.fav;
+      stop.title = undefined; // refit with/without the ★ on return
+      if (state.stop === stop) {
+        state.stopIsFav = stop.fav;
+        draw(); // footer hint updates
+      }
+    })
+    .catch(() => { state.favPending = false; });
+}
+
 function closeArrivals() {
   stopRefreshTimer();
   state.mode = MODE_LIST;
@@ -600,7 +627,15 @@ function closeArrivals() {
 new Button({
   types: ["select", "up", "down", "back"],
   onPush(down, type) {
-    if (!down) return; // act on press only
+    if (!down) {
+      // Releasing Select before the long-press timer fires cancels the
+      // unfavorite (the unfavorite itself happens mid-hold, in the timer).
+      if (state.selTimer) {
+        Timer.clear(state.selTimer);
+        state.selTimer = null;
+      }
+      return;
+    }
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
@@ -624,21 +659,20 @@ new Button({
       }
     } else {
       if (type === "select" && state.stop && !state.favPending) {
-        // Favorites live on the phone; toggle there. In-flight guard so a
-        // mashed Select can't stack request cycles (playbook §B).
-        state.favPending = true;
-        const stop = state.stop;
-        protocol.toggleFav(stop.agency, stop.code, stop.name)
-          .then(resp => {
-            state.favPending = false;
-            stop.fav = !!resp.fav;
-            stop.title = undefined; // refit with/without the ★ on return
-            if (state.stop === stop) {
-              state.stopIsFav = stop.fav;
-              draw(); // footer hint updates
+        // Tap favorites; unfavoriting needs a ≥LONGPRESS_MS hold so a stray
+        // tap can't silently unstar a stop. The timer fires mid-hold; the
+        // mode/fav re-checks make it a no-op if the screen or state changed
+        // under it, and releasing early cancels it (release handler above).
+        if (state.stop.fav) {
+          state.selTimer = Timer.set(() => {
+            state.selTimer = null;
+            if (state.mode === MODE_ARRIVALS && state.stop && state.stop.fav) {
+              toggleFav();
             }
-          })
-          .catch(() => { state.favPending = false; });
+          }, LONGPRESS_MS);
+        } else {
+          toggleFav();
+        }
       } else if (type === "back") {
         closeArrivals();
       } else if (type === "up") {

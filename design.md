@@ -110,7 +110,7 @@ from ~124 B to ~1.9 KB after the switch). `timeX` is remeasured in-frame
 | Text | Where |
 |---|---|
 | Header title "Transit Glance" (+ "…" appended after the title during a refresh frame-hold — both screens, the arrivals header gets it too; "…" because its glyph is proven in Gothic-Bold 18; arrow glyphs like ↻ are not in the font and render blank) | `drawHeader()` / `drawHeaderBusy()`, `main.js` |
-| "★ favorited — Select to remove" / "Select to ★ favorite" | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js:87-88` |
+| "★ hold Select to unfavorite" / "Select to ★ favorite" | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js` |
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
 | "Now" (arrival due) | `prepareArrivals()`, `main.js:234` |
@@ -128,7 +128,7 @@ changes belong on the phone, not the watch (thin-client rule).
 |---|---|---|
 | Up | Move selection up; **at top: pull-to-refresh** — the old list **stays on screen** (frame-hold) with a "…" indicator after the header title while a `fresh:1` rebuild runs. Under the hood the row data is **released before** the response arrives (a rows parse needs >1.6 KB of chunk and must land beside an empty list — playbook §B ninth recurrence); only the framebuffer still shows the rows, and `draw()` self-gates on `state.refreshing` until the response lands (the clock freezes during the hold) | Scroll up; **at top: manual refresh** — same frame-hold as the list (see §7: every arrivals fetch releases-then-reloads) |
 | Down | Move selection down; **at bottom: load more stops** — append the next page of farther stops (`fetchMore()` → phone `buildMoreRows`), up to `MAX_LIST_ROWS`=14 total, no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
-| Select | Open arrivals for highlighted stop | Toggle ★ favorite **visibility** (never deletes) — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
+| Select | Open arrivals for highlighted stop | **Tap to ★ favorite; HOLD 0.5 s (`LONGPRESS_MS`) to unfavorite** — a stray tap on a starred stop does nothing (accidental unfavorites during fast use prompted this). The unfavorite fires **mid-hold at the threshold** (a `Timer` armed on press, cancelled by early release), so the footer hint flips while the button is still down; releasing early cancels. Toggles **visibility** only (never deletes) via a `fav` request to the **phone** (which owns the list) |
 | Back | Exit app (`watch.exit()`) | Return to list |
 
 Neither screen refreshes on **Down** anymore (it was a wasted API call): Down
