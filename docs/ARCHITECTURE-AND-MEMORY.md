@@ -89,6 +89,9 @@ Every one of these presented as `Alloy: Fatal Error / memory full`:
 | 2 | Same crash returns while scrolling | Reducing churn isn't enough; draw() must allocate zero | `8cab132` precompute |
 | 3 | Crash on refresh-mashing | In-flight request cycles pin live memory | `7d899ed` guards |
 | 4 | Instant crash at launch | **Code size is heap**; #2's precompute also moved a big allocation burst to response time with ~0 headroom | `86b4966` + `d7ca0d0` thin client |
+| 5 | Warm refreshes crash, boot fine | Retained parsed payloads (`rowsSrc`) make the next response parse beside them — keep display data only | derive in-handler, drop the payload tree |
+| 6 | "Memory full easily" in normal use | A per-second `secondchange` listener churns ~80 B/s even when its handler early-returns — match wakeup cadence to output cadence | `2db30cc` minute-aligned Timer |
+| 7 | Rapid Up-presses on the list | In-flight guards serialize but don't rate-limit — ~200 ms cached round trips allow ~5 cycles/s; also the 880 B budget missed `id`/`stale` overhead (884 B on the wire) | budget on final payload in `respond()`; fresh-direct pull-to-refresh; 3 s `REFRESH_COOLDOWN_MS` |
 
 The meta-lesson: at near-zero headroom the crash site moves with every
 rebuild, so plausible fixes keep "working" briefly. Measure headroom

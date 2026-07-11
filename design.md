@@ -109,7 +109,7 @@ from ~124 B to ~1.9 KB after the switch). `timeX` is remeasured in-frame
 
 | Text | Where |
 |---|---|
-| Header title "Transit Glance" | `draw()`, `main.js:186` |
+| Header title "Transit Glance" (+ "…" appended after the title during a pull-to-refresh frame-hold — "…" because its glyph is proven in Gothic-Bold 18; arrow glyphs like ↻ are not in the font and render blank) | `drawHeader()` / `draw()`, `main.js` |
 | "★ favorited — Select to remove" / "Select to ★ favorite" | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js:87-88` |
 | "Loading…", "Finding stops…", "No stops nearby", "No arrivals", "Connecting…", "Waiting for phone…", "Error: …" | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
 | "Set API key in app settings", "No phone location", "Bad API key", "Rate limited", "Network error", "511 timeout" | phone side: `src/pkjs/index.js`, `src/pkjs/transit511.js` |
@@ -126,7 +126,7 @@ changes belong on the phone, not the watch (thin-client rule).
 
 | Button | LIST screen | ARRIVALS screen |
 |---|---|---|
-| Up | Move selection up; **at top: pull-to-refresh** (re-run nearby search) | Scroll up; **at top: manual refresh** |
+| Up | Move selection up; **at top: pull-to-refresh** — the old list **stays on screen** (frame-hold) with a "…" indicator after the header title while a `fresh:1` rebuild runs. Under the hood the row data is **released before** the response arrives (a rows parse needs >1.6 KB of chunk and must land beside an empty list — playbook §B ninth recurrence); only the framebuffer still shows the rows, so `draw()` is suppressed until the response lands (`state.refreshing`; the minute clock skips its redraw during the hold) | Scroll up; **at top: manual refresh** |
 | Down | Move selection down; **at bottom: load more stops** — append the next page of farther stops (`fetchMore()` → phone `buildMoreRows`), up to `MAX_LIST_ROWS`=14 total, no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
 | Select | Open arrivals for highlighted stop | Toggle ★ favorite **visibility** (never deletes) — sends a `fav` request to the **phone** (which owns the list); footer hint updates when the reply lands |
 | Back | Exit app (`watch.exit()`) | Return to list |
@@ -141,21 +141,30 @@ it keeps working in dense areas; both are bounded by the caps in §9
 (`MAX_LIST_ROWS`, `ARR_MAX`) and each AppMessage page still fits the 880 B
 payload — the watch accumulates the pages in RAM.
 
+Both manual-refresh paths (Up at the top of either screen) share a **3 s
+cooldown** (`REFRESH_COOLDOWN_MS`, `state.refrOkAt`, main.js): the phone
+answers from cache in ~200 ms, so the in-flight guards alone admitted ~5
+full request cycles a second under a mashed Up and crashed the watch
+(playbook §B, seventh recurrence). Presses inside the cooldown are no-ops.
+
 Actions fire on press (`down === true`), releases ignored. Because
 `"back"` is registered, single-tap auto-exit is replaced — LIST-screen
 exit is restored manually via `watch.exit()`. Any new button-triggered
 request **must** keep its in-flight guard (`state.nearbyPending`,
-`state.arrivalsPending`, `state.favPending`) — button-mashing without one
-has crashed the watch (CLAUDE.md §12 item 12).
+`state.arrivalsPending`, `state.favPending`) **and** a cooldown when the
+response can arrive faster than a human can press (guards serialize, they
+don't rate-limit) — button-mashing without them has crashed the watch
+(CLAUDE.md §12 item 12; playbook §B/§G).
 
 ## 7. Timing & refresh cadence
 
 | Behavior | Value | Where |
 |---|---|---|
 | Arrivals auto-refresh while screen open | 60 s | `Timer.repeat` in `openArrivals()`, `main.js:305` |
+| Manual-refresh cooldown (Up at top, both screens) | 3 s | `REFRESH_COOLDOWN_MS`, `main.js` — see §6 |
 | Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:367` |
 | Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js:244` — one StopMonitoring call per agency, no stopcode. These per-agency calls are fired **concurrently** (not serially) in `buildRows`/`getFavoriteStatus` — the sequential version was the main field latency |
-| Persisted rows list (stale-while-revalidate) | 6 h | `ROWS_STALE_TTL_MS`, `index.js` — a plain `nearby` request is answered instantly from this cache (`stale:1`, no geolocation/network); the watch shows it, then sends one `fresh:1` follow-up that does the real compute and replaces the list. Widened ("load more") lists are not cached |
+| Persisted rows list (stale-while-revalidate) | 6 h | `ROWS_STALE_TTL_MS`, `index.js` — a plain `nearby` request is answered instantly from this cache (`stale:1`, no geolocation/network); the watch shows it, then sends one `fresh:1` follow-up that does the real compute and replaces the list. Serves launch/settings-changed only: pull-to-refresh with a list on screen sends `fresh:1` directly (re-parsing the stale echo of the visible list was pure churn — playbook §B, seventh recurrence). Widened ("load more") lists are not cached |
 | Stop-list cache | 7 days | `STOP_CACHE_TTL_MS`, `transit511.js:38` |
 | Watch request timeout | 15 s | `REQUEST_TIMEOUT_MS`, `protocol.js:48` |
 | Phone HTTP timeout | 20 s | `getJSON()`, `transit511.js:45` |
@@ -195,7 +204,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14. **Down "load more" appends** farther stops up to `MAX_LIST_ROWS`=14 total on the watch (the phone paginates via `buildMoreRows`, `off` = non-favorites already shown, `hardCeiling` override on `selectNearbyStops` reaches past the default 14 candidates) | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js`; `fetchMore()`, `main.js` |
 | Search radius | `radiusM` setting, default 500 m for the page-0 list; "load more" paginates from a wider `MORE_RADIUS_M`=5000 m search so farther stops become reachable | settings, `index.js`; `buildMoreRows`, `index.js` |
-| Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — farthest non-favorite stops shed first, favorites never shed | `buildRows()`, `index.js` |
+| Rows payload budget | 880 B (raised from 700 when subtitles grew direction/lines) — enforced on the **final serialized payload** in `respond()` (`id`/`stale:1` overhead included; budgeting before they were appended once put 884 B on the wire and crashed the watch mid-parse). Farthest non-favorite stops shed first, favorites never shed | `respond()`, `index.js` |
 | Arrivals per stop | default 6; **Down "load more" raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 
 ## 10. Text truncation lengths
@@ -209,8 +218,11 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Destination | 24 chars | `transit511.js:428` |
 
 On-screen fitting on top of these caps is `ellipsize()` (binary-search,
-called only inside `begin()/end()`, results cached per row). Raising the
-phone-side caps raises payload size — re-check the 880 B budget in §9.
+called only inside `begin()/end()`, results cached per row **while the row
+is in the visible scroll window and released once it scrolls away** — both
+screens; a permanent cache retained ~1 KB of fitted duplicates on a full
+list and crashed a refresh parse, playbook §B eighth recurrence). Raising
+the phone-side caps raises payload size — re-check the 880 B budget in §9.
 
 ## 11. Settings (Clay — `src/pkjs/config.js`, defaults `index.js:28-34`)
 

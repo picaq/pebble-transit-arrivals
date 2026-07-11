@@ -81,6 +81,12 @@ const MAX_LIST_ROWS = 14; // list "load more" cap (favorites + nearby) — keeps
 const ARR_DEFAULT = 6;  // arrivals requested on open
 const ARR_MAX = 10;     // arrivals ceiling for "load more" (phone caps too)
 const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
+// Minimum spacing between manual refreshes (Up at the top of either screen).
+// The in-flight guards serialize request cycles but do NOT rate-limit them:
+// the phone answers from cache in ~200 ms, so a mashed Up ran ~5 complete
+// parse-and-rebuild cycles a second and crashed the heap (playbook §B,
+// seventh recurrence). A cooldown is required alongside every guard.
+const REFRESH_COOLDOWN_MS = 3000;
 
 // draw() must stay ALLOCATION-FREE (docs/WATCH-DEBUGGING-PLAYBOOK.md §B):
 // string churn in the render path fragments this watch's tiny heap until an
@@ -116,6 +122,12 @@ const state = {
   nearbyPending: false,       // in-flight guard — see fetchNearby()
   moreExhausted: false,       // list "load more" reached the end (no more stops)
   favPending: false,          // in-flight guard for the favorite toggle
+  refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
+  refreshing: false,          // pull-to-refresh frame-hold: rows are RELEASED
+                              // (heap!) but the last frame stays on screen with
+                              // a "…" header indicator; draw() must not run
+                              // until the fresh response lands (see draw gate
+                              // in updateClock and the Up handler)
   timeStr: "",                // precomputed clock text (see updateClock)
   minStamp: -1,               // last integer minute stamp — gates reformat/redraw
   timeX: 0,                   // cached right-aligned x for timeStr
@@ -140,16 +152,27 @@ function setRowsFromResponse(list) {
   clampScroll();
 }
 
-// Fit a row's text once; cached on the row, so steady-state draws allocate
-// nothing. Called only from draw(), inside begin()/end() — the only place
-// text measurement has proven safe on this platform (playbook §B/§F).
+// Fit a row's text once; cached on the row WHILE it stays in the visible
+// window, and released once it scrolls away. The cache used to be permanent,
+// so scrolling a full 14-row list retained ~1 KB of fitted duplicates beside
+// the originals — the chunk pool hit 288 B free and a within-budget refresh
+// response faulted mid-parse (playbook §B, eighth recurrence). Retained
+// fitted text is now bounded by the window, not the list length; steady-state
+// draws still allocate nothing (comparisons only), and re-scrolling refits
+// in-frame, 2 strings per step. Called only from draw(), inside
+// begin()/end() — the only place text measurement has proven safe (§B/§F).
 function fitVisibleRows() {
   const end = Math.min(state.rows.length, state.top + VISIBLE_ROWS);
-  for (let i = state.top; i < end; i++) {
+  for (let i = 0; i < state.rows.length; i++) {
     const row = state.rows[i];
-    if (row.title === undefined) {
-      row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
-      row.subtitle = ellipsize(row.sub, fontSub, LIST_TEXT_W);
+    if (i >= state.top && i < end) {
+      if (row.title === undefined) {
+        row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
+        row.subtitle = ellipsize(row.sub, fontSub, LIST_TEXT_W);
+      }
+    } else if (row.title !== undefined) {
+      row.title = undefined;
+      row.subtitle = undefined;
     }
   }
 }
@@ -162,10 +185,15 @@ function clampScroll() {
 
 /* ------------------------------------------------------------------ draw */
 
-function drawHeader(title) {
+function drawHeader(title, busy) {
   render.fillRectangle(ACCENT, 0, 0, render.width, HEADER_H);
   const w = render.getTextWidth(title, fontHeader);
-  render.drawText(title, fontHeader, WHITE, (render.width - w) >> 1, 4);
+  const x = (render.width - w) >> 1;
+  render.drawText(title, fontHeader, WHITE, x, 4);
+  // Refresh-pending indicator, drawn after the (still centered) title. "…"
+  // because its glyph is proven in this font ("Loading…") — arrow glyphs
+  // like ↻ are not in the Gothic tables and would render as a blank.
+  if (busy) render.drawText("…", fontHeader, WHITE, x + w + 4, 4);
 }
 
 // Binary search the cut point instead of trimming one character at a time:
@@ -197,7 +225,7 @@ function draw() {
 
   if (state.mode === MODE_LIST) {
     fitVisibleRows(); // no-op once the visible rows are fitted
-    drawHeader("Transit Glance");
+    drawHeader("Transit Glance", state.refreshing);
     if (!state.rows.length) {
       render.drawText(state.status, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
@@ -221,6 +249,18 @@ function draw() {
     if (!state.arrivals.length) {
       render.drawText(state.arrivalsStatus, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
+      // Release fitted text outside the scroll window — same eviction policy
+      // as fitVisibleRows (playbook §B, eighth recurrence): off-screen fitted
+      // copies are retained weight while the 60 s auto-refresh parses beside
+      // them. Keep one row of margin for the partially visible bottom row.
+      for (let i = 0; i < state.arrivals.length; i++) {
+        const a = state.arrivals[i];
+        if ((i < state.arrTop || i > state.arrTop + VISIBLE_ARRIVALS) &&
+            a.lineText !== undefined) {
+          a.lineText = undefined;
+          a.destText = undefined;
+        }
+      }
       let y = HEADER_H + 4;
       // Scrollable window: draw from state.arrTop (Up/Down scroll; Down at the
       // bottom loads more — see the button handler).
@@ -297,7 +337,10 @@ function updateClock() {
   if (h === 0) h = 12;
   state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
   state.timeDirty = true;
-  draw();
+  // Frame-hold: mid pull-to-refresh the rows are released but their pixels
+  // are still on screen — a redraw here would blank the list. Skip; the
+  // fresh clock text lands with the redraw when the response arrives.
+  if (!state.refreshing) draw();
 }
 
 // Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
@@ -333,13 +376,14 @@ let migFavs = localStorage.getItem("favorites.v1");
 function fetchNearby(fresh) {
   if (state.nearbyPending) return;
   state.nearbyPending = true;
-  if (!state.rows.length) {
+  if (!state.rows.length && !state.refreshing) { // hold the frame mid-refresh
     state.status = "Finding stops…";
     draw();
   }
   protocol.nearbyStops(migFavs, fresh)
     .then(resp => {
       state.nearbyPending = false;
+      state.refreshing = false;
       const isStale = !!resp.stale;
       // Migration completes only on a real (non-stale) response — the stale
       // reply is served before the phone imports anything.
@@ -354,6 +398,7 @@ function fetchNearby(fresh) {
     })
     .catch(err => {
       state.nearbyPending = false;
+      state.refreshing = false; // release the frame-hold: show the error
       console.log("nearby failed: " + err.message);
       if (!state.rows.length) {
         state.status = "Error: " + err.message;
@@ -479,7 +524,29 @@ new Button({
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
-        else fetchNearby(false); // at the top: pull-to-refresh
+        else if (Date.now() >= state.refrOkAt) {
+          // At the top: pull-to-refresh. fresh:1 always — the list data is
+          // released below, so there is nothing to revalidate and the stale
+          // echo would just add a second parse. Cooldown: REFRESH_COOLDOWN_MS.
+          state.refrOkAt = Date.now() + REFRESH_COOLDOWN_MS;
+          if (!state.nearbyPending) { // else in flight: don't repaint, don't fetch
+            if (state.rows.length) {
+              // Frame-hold refresh: paint ONE frame with the "…" header
+              // indicator while the rows still exist, then release them —
+              // the framebuffer keeps the pixels, and the released ~1.2 KB+
+              // is what lets the fresh response parse (a rows parse needs
+              // >1.6 KB of chunk, playbook §B ninth recurrence). draw() is
+              // suppressed until the response lands (updateClock gate;
+              // other draw paths are no-ops while rows is empty).
+              state.refreshing = true;
+              draw();
+              state.rows = [];
+              state.sel = 0;
+              state.top = 0;
+            }
+            fetchNearby(true);
+          }
+        }
       } else if (type === "down") {
         if (state.sel < state.rows.length - 1) {
           state.sel++; clampScroll(); draw();
@@ -511,9 +578,14 @@ new Button({
       } else if (type === "back") {
         closeArrivals();
       } else if (type === "up") {
-        // Scroll up; at the very top, manual refresh.
+        // Scroll up; at the very top, manual refresh — rate-limited like the
+        // list's pull-to-refresh (the phone's 45 s arrivals cache answers
+        // near-instantly, so the guard alone doesn't stop refresh-mashing).
         if (state.arrTop > 0) { state.arrTop--; draw(); }
-        else fetchArrivals();
+        else if (Date.now() >= state.refrOkAt) {
+          state.refrOkAt = Date.now() + REFRESH_COOLDOWN_MS;
+          fetchArrivals();
+        }
       } else if (type === "down") {
         // Scroll down; at the bottom, load more arrival times (no refresh).
         if (state.arrTop + VISIBLE_ARRIVALS < state.arrivals.length) {

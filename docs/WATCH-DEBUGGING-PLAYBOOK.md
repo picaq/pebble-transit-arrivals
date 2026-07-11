@@ -155,6 +155,67 @@ established on real hardware in this repo:
   listeners/timers are continuous churn; match the wakeup cadence to how
   often the output actually changes, and measure with §F — the per-second
   climb between GCs is the signature.
+- **Seventh recurrence (2026-07-10, captured live over instrumentation):
+  rapid Up-presses on the list — an in-flight guard serializes request
+  cycles but does NOT rate-limit them.** Pull-to-refresh was answered from
+  the phone's stale rows cache in ~200 ms (no GPS, no network), so every
+  press ran a complete cycle — parse ~880 B, rebuild 10 display rows,
+  refit visible text, spawn the fresh:1 follow-up — and mashing produced
+  ~5 cycles/s: 15 GCs/s, the slot pool driven to **16 B free** (19,424 of
+  19,440 used), and the abort landed while parsing a rows response with
+  ~2.1 KB chunk free in a saturated arena. Two compounding bugs: (1) the
+  880 B rows budget ran *before* `id`/`stale:1` were appended, so the wire
+  payload was actually 884 B; (2) pull-to-refresh with a list already on
+  screen was served the stale cache first — a full-cost parse of the exact
+  list the user was looking at, before the real fresh request even ran.
+  Fixes: budget enforced on the final serialized payload in `respond()`
+  (index.js); pull-to-refresh sends `fresh:1` directly when rows are
+  showing; a 3 s cooldown on both manual-refresh buttons
+  (`REFRESH_COOLDOWN_MS`, main.js). Lesson: **guards and cooldowns are
+  different defenses** — a guard stops *stacking*, but when the phone
+  answers from cache the round trips complete fast enough that back-to-back
+  cycles churn the heap just as fatally. Every user-triggerable request
+  path needs both.
+- **Eighth recurrence (2026-07-10, hours after the seventh, captured live):
+  a within-budget response crashed the parse — the retained list was the
+  problem, not the payload.** Repro: "load more" grew the list to its
+  14-row cap (8 of them favorites), the user scrolled the whole list, then
+  pull-to-refreshed: chunk pool at 6,376 of 6,664 used (**288 B free**),
+  and an 879 B rows response faulted mid-parse. Guards, cooldown, and
+  budget all held. The unbounded retained state was the **fitted-text
+  cache**: every row ever scrolled past kept its ellipsized title+subtitle
+  copies forever, beside the originals (~1 KB across 14 rows; the arrivals
+  screen cached the same way). Fix: `fitVisibleRows()` and the arrivals
+  draw loop now **release** fitted copies once a row leaves the visible
+  window — retained fitted text is bounded by the window size, not the
+  list length; re-scrolling refits in-frame (2 strings per scroll step).
+  Lesson: **a lazily built per-item cache needs eviction by the same
+  window that builds it** — "fit once, keep forever" is a slow retained
+  leak on any list longer than the screen.
+- **Ninth recurrence (2026-07-10, same repro as the eighth): the parse
+  spike is bigger than intuition says — measure it, then make room for it
+  by construction.** The windowed-eviction fix verifiably worked (the log
+  shows chunk use dropping 6,204 → 4,896 as the user scrolled back up),
+  yet the same pull-to-refresh crashed again with **~1.6 KB chunk free**
+  while parsing an 872 B response. Three captured crashes bracket the cost
+  of handling one ~870 B rows response at **>1.6 KB of chunk** (the raw
+  string arrives in chunk heap, JSON.parse duplicates every string value,
+  plus temporaries — and fragmentation raises the effective bar). Fix:
+  manual pull-to-refresh now **releases the list before requesting**
+  (`state.rows = []`, screen shows "Finding stops…" for the few seconds
+  the fresh compute takes) so the response parses beside an empty list —
+  the boot condition, which has never faulted. (Refined same day into a
+  **frame-hold**: paint one frame with a header "…" indicator, then release
+  the rows — Poco only repaints on `begin()/end()`, so the framebuffer
+  keeps showing the old list while its heap is already free; every draw()
+  path must be suppressed until the response lands, or the hold blanks.
+  Same memory math, no visible blanking.) Lessons: (1) budget ~2× the
+  wire size in free chunk for any watch-side JSON parse, and if that isn't
+  reliably available, **free the old data before the new data arrives**
+  rather than replace-then-collect; (2) when a fix is verified working but
+  the crash persists, the next fix must come from the measured numbers,
+  not another plausible mechanism — that's the two-fix rule's actual
+  meaning.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
@@ -332,6 +393,10 @@ Beyond CLAUDE.md §11:
 - Every user-triggerable request path (button-driven refreshes included) has
   an in-flight guard, and protocol.js's `MAX_PENDING` backstop stays in
   place — mashed buttons must produce no-ops, not stacked request cycles.
+  **A guard alone is not enough when responses come back fast**: cached
+  phone replies round-trip in ~200 ms, so a guard still admits ~5 complete
+  request cycles a second (§B, seventh recurrence). Manual-refresh paths
+  also need a cooldown (`REFRESH_COOLDOWN_MS`).
 - **Embedded JS code size is runtime heap.** The mod bytecode loads into
   the same VM arena the heap lives in (§B). Keep `src/embeddedjs/` lean;
   after growing it meaningfully, re-run the §F gauge (or check the

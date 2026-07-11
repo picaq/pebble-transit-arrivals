@@ -297,6 +297,21 @@ Pebble.addEventListener("webviewclosed", function (e) {
 function respond(id, body) {
   body.id = id;
   var payload = JSON.stringify(body);
+  // The rows payload budget is enforced HERE, on the final wire payload.
+  // It used to run inside buildRows, before `id` (and `stale:1` on
+  // cache-served replies) were appended — the overhead pushed an exactly-
+  // budgeted list to 884 B on the wire and the watch crashed "memory full"
+  // parsing it (playbook §B, seventh recurrence). Farthest nearby stops
+  // shed first (rows arrive sorted); favorites are never shed.
+  if (body.type === "rows" && body.rows && body.rows.length) {
+    var rows = body.rows;
+    var favCount = 0;
+    for (var i = 0; i < rows.length; i++) if (rows[i].f) favCount++;
+    while (payload.length > 880 && rows.length > Math.max(favCount, 1)) {
+      rows.pop();
+      payload = JSON.stringify(body);
+    }
+  }
   console.log("resp id=" + id + " type=" + body.type + " " + payload.length + "B");
   Pebble.sendAppMessage(
     { Response: payload },
@@ -406,16 +421,11 @@ function buildRows(req, lat, lon, settings) {
       }).join(", "));
 
       var body = { type: "rows", rows: rows };
-      // Payload budget: 880 B (was 700 before subtitles grew direction and
-      // line info) — the watch parses this while its chunk heap has only a
-      // few KB of slack on 32 KB-arena firmware (playbook §B). Shed the
-      // farthest nearby stops first; favorites are never shed.
-      while (JSON.stringify(body).length > 880 && rows.length > favRows.length) {
-        rows.pop();
-      }
-      // Persist the list for instant stale-while-revalidate replies. Only the
-      // normal page-0 list reaches here ("load more" pages go through
-      // buildMoreRows and are never cached).
+      // Budgeting to 880 B happens in respond(), on the final serialized
+      // payload. Persist the list first for instant stale-while-revalidate
+      // replies (the cache may hold a row or two more than fits one reply;
+      // stale serves re-shed in respond). Only the normal page-0 list is
+      // cached ("load more" pages go through buildMoreRows).
       saveRowsCache(rows);
       respond(req.id, body);
     };
@@ -488,9 +498,9 @@ function buildMoreRows(req, lat, lon, settings) {
       });
       rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
       var body = { type: "rows", rows: rows };
-      while (JSON.stringify(body).length > 880 && rows.length > 1) rows.pop();
-      console.log("more rows: " + rows.length + " beyond off " + req.off);
+      // Budgeted to 880 B in respond() (sheds in place, so log after).
       respond(req.id, body);
+      console.log("more rows: " + rows.length + " beyond off " + req.off);
     };
 
     if (!remaining) return finish();
