@@ -305,6 +305,18 @@ established on real hardware in this repo:
   unanswered requests recur, investigate AppMessage loss; under the
   serialized protocol a lost response holds the wire for the full 15 s
   timeout and queues everything behind it.
+  **Residual repro, pinned 2026-07-11 (full instrumentation capture):**
+  boot → stale list (8 favorites + 2 nearby fit the 880 B page) → scroll
+  to the bottom → "load more" fires → the ≤400 B more-rows page parses
+  ~7 s later (the phone was busy with a 33 K-visit stop-info fetch) and
+  aborts on **slot exhaustion**: slot pool at its ceiling (20,080 used of
+  20,464; the pool had just grown 19,440 → 20,464), arena spare 108 B,
+  chunk free 1.1 KB (irrelevant — the slot pool asked). Payload budgets
+  all held; the baseline slot watermark (~18.8 KB at idle, mostly
+  program structure) is what leaves no room. The user experiences this
+  as "selecting into a stop crashes" because the load-more press is part
+  of reaching a non-favorited stop. Confirms the endpoint: no payload or
+  code fix changes this on 32 KB firmware.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
@@ -315,8 +327,13 @@ established on real hardware in this repo:
   growth disabled. **Requires watch firmware ≥ v4.21.0** (2026-07-03):
   older firmware has a shadowed-variable bug that silently ignores the
   sizes and uses the 32 KB default (fixed in commit `76cd732`); the
-  `flags` field works on all versions. On old firmware the only lever is
-  shrinking embedded code.
+  `flags` field works on all versions. Verified empirically 2026-07-11:
+  a fitting-sum record (stack 4096 / slot 8192 / chunk 8192, sum well
+  under 32 KB) is ignored identically — boot instruments still showed
+  stack 6,144 and initial pools 8192/8176. There is no partial path: on
+  old firmware the size fields simply never apply, so shrinking the
+  stack request cannot hand arena to the slot pool. On old firmware the
+  only lever is shrinking embedded code.
 
 Debugging order:
 
