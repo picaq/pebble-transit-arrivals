@@ -148,6 +148,13 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // list and the AppMessage payload bounded even in the densest area.
 var HARD_STOP_CEILING = 14;
 
+// Rail agencies whose FAVORITES stay on the list farther out: their hide
+// line is maxCheckM × settings.railRadiusX in getFavoriteStatus (stations
+// are sparse and a train is worth a longer trip). Nearby search is not
+// affected — only starred stops earn the longer reach. BA = BART,
+// CT = Caltrain.
+var RAIL_AGENCIES = { BA: 1, CT: 1 };
+
 /**
  * settings.maxStops is a typical/floor count, not a hard cutoff: once that
  * many stops are found, keep extending the list while consecutive stops
@@ -291,15 +298,23 @@ function getStopInfo(agency, apiKey, cb) {
 /**
  * Distance, name, and service status for the favorite stops.
  * favs: [{ agency, code, name }] (≤ 10)
- * maxCheckM: skip the (API-costing) arrival check for favorites farther
- * than this — the caller drops them from the response anyway.
- * cb(null, [{ agency, code, dist, name?, hasArr? }]) — dist in meters, -1
- * when the stop can't be found; name comes from the cached stop list
- * (absent on a cache/API miss — the caller falls back to the saved name);
- * hasArr only present when it was actually checked.
+ * maxCheckM: the base hide line — favorites farther than it come back with
+ * far:1 (the caller drops those from the list) and skip the arrival check.
+ * RAIL_AGENCIES favorites use maxCheckM × settings.railRadiusX instead:
+ * only starred stations earn the longer reach, so rail knowledge stays
+ * inside this provider.
+ * cb(null, [{ agency, code, dist, name?, far?, hasArr? }]) — dist in
+ * meters, -1 when the stop can't be found (never far:1 — an unresolved
+ * favorite still shows, with its saved name); name comes from the cached
+ * stop list (absent on a cache/API miss); hasArr only present when it was
+ * actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
  */
 function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
+  var railX = Number(settings.railRadiusX) || 1;
+  function hideLineM(agency) {
+    return RAIL_AGENCIES[agency] ? maxCheckM * railX : maxCheckM;
+  }
   // Group by agency so each stop list is loaded (and its cache JSON-parsed)
   // once, not per favorite.
   var byAgency = {};
@@ -326,7 +341,9 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
             }
           }
         }
-        entries.push({ agency: agency, code: codes[i], dist: dist, name: name });
+        var entry = { agency: agency, code: codes[i], dist: dist, name: name };
+        if (dist >= 0 && dist > hideLineM(agency)) entry.far = 1;
+        entries.push(entry);
       }
       nextAgency();
     });
@@ -338,7 +355,7 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
   function checkArrivals() {
     var checkAgencies = {};
     entries.forEach(function (entry) {
-      if (entry.dist >= 0 && entry.dist <= maxCheckM) checkAgencies[entry.agency] = 1;
+      if (entry.dist >= 0 && !entry.far) checkAgencies[entry.agency] = 1;
     });
     var list = Object.keys(checkAgencies);
     var remaining = list.length;
@@ -352,7 +369,7 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
       getStopInfo(agency, settings.apiKey, function (err, map) {
         if (!err) {
           entries.forEach(function (entry) {
-            if (entry.agency === agency && entry.dist >= 0 && entry.dist <= maxCheckM) {
+            if (entry.agency === agency && entry.dist >= 0 && !entry.far) {
               entry.hasArr = !!map[entry.code];
             }
           });

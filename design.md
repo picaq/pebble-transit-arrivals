@@ -201,7 +201,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Behavior | Value | Where |
 |---|---|---|
 | Max favorites stored | 20 (storage cap — hidden records accumulate until trashed) | `MAX_FAVORITES`, `index.js` |
-| Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — reappears when near; (b) `hide` flag (watch unstar or settings toggle). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
+| Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — **× `railRadiusX` for BART/Caltrain favorites** (`RAIL_AGENCIES` = BA, CT; `getFavoriteStatus` computes the per-agency line and returns `far:1`, so rail knowledge stays inside the provider) — reappears when near; (b) `hide` flag (watch unstar or settings toggle). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
 | Delete a favorite | settings page 🗑 toggle + save; `window.confirm` dialog in the webview (degrades to no-dialog if Clay's DOM changes — see `clayCustomFn`) | `showConfiguration` / `webviewclosed`, `index.js` |
 | Dim a row (favorite or nearby stop) | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map (skipped when that map failed to load — unknown stays undimmed) — no per-stop API calls | `buildRows()` + `buildMoreRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
 | New favorite position | added to the front of the saved list | `fav` handler, `index.js` |
@@ -213,7 +213,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 |---|---|---|
 | Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14. **Down "load more" appends** farther stops up to `MAX_LIST_ROWS`=14 total on the watch (the phone paginates via `buildMoreRows`, `off` = non-favorites already shown, `hardCeiling` override on `selectNearbyStops` reaches past the default 14 candidates) | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js`; `fetchMore()`, `main.js` |
-| Search radius | `radiusM` setting, default 500 m for the page-0 list; "load more" paginates from a wider `MORE_RADIUS_M`=5000 m search so farther stops become reachable | settings, `index.js`; `buildMoreRows`, `index.js` |
+| Search radius | `radiusM` setting, default 500 m for the page-0 list; "load more" paginates from a wider `MORE_RADIUS_M`=5000 m search so farther stops become reachable. The `railRadiusX` multiplier deliberately does **not** touch the nearby search — it extends favorites only (see §8); an earlier version appended unstarred far stations here and was reverted 2026-07-12 by user choice | settings, `index.js`; `buildMoreRows`, `index.js` |
 | Rows payload budget | 880 B for page-0 lists (raised from 700 when subtitles grew direction/lines); **400 B for "load more" pages** (`MORE_BUDGET`, ≈5 stops/page — the one response parsed beside a retained full list, sized to the measured ~750 B worst-case free chunk, playbook §B thirteenth recurrence). Enforced on the **final serialized payload** in `respond()` (`id`/`stale:1` overhead included; budgeting before they were appended once put 884 B on the wire and crashed the watch mid-parse). Farthest non-favorite stops shed first, favorites never shed | `respond()` + `MORE_BUDGET`, `index.js` |
 | Arrivals per stop | default 6; **Down "load more" raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 
@@ -240,13 +240,14 @@ pixels narrower than a "…", so more of the name survives. This is *not* the
 same glyph as the "…" busy indicator in §5 — that one means "refresh in
 flight" and stays an ellipsis.
 
-## 11. Settings (Clay — `src/pkjs/config.js`, defaults `index.js:28-34`)
+## 11. Settings (Clay — `src/pkjs/config.js`, defaults `DEFAULT_SETTINGS` in `index.js`)
 
 | Setting | Default | Notes |
 |---|---|---|
 | `apiKey` | "" (dev: seeded from `localSecrets`) | Phone-only, never sent to watch |
 | `agencies` | SF, BA, AC, GG, SM | Checkboxes + free-form `ExtraAgencies` codes |
 | `radiusM` | 500 | Nearby search radius |
+| `railRadiusX` | 1 (slider 1–30) | BART/Caltrain **favorites** hide line = `hideFavKm` × this, see §8 (Clay description quotes examples for the 19 km default: 3× = 57 km … 30× = 570 km) |
 | `maxStops` | 8 | Soft cap, see §9 |
 | `hideFavKm` | 19 (slider 1–100) | Favorites beyond this are left off the watch list, see §8 |
 | Favorite stops section | dynamic | Per saved favorite: a `Show_<agency>_<code>` show/hide toggle (sets/clears `hide`) plus a `Del_<agency>_<code>` 🗑 delete toggle (confirmed at save). Appended before the submit button each time the page opens (`showConfiguration`) |

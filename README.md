@@ -210,6 +210,14 @@ A nearby favorite with nothing currently arriving draws dimmed (gray,
 subtitle "no arrivals"); service info comes from one cached agency-wide
 request, so a stop that just went quiet can stay undimmed briefly.
 
+Train stations are worth a longer reach than bus stops, so the settings
+page has a **BART/Caltrain favorites distance multiplier** slider (1–30×,
+default 1 = off): favorited BART and Caltrain stops stay on the watch list
+that many times farther away than the "Hide favorites beyond" distance
+(e.g. 19 km × 10 = 190 km) — handy for keeping your starred station on the
+list for the whole ride. Only favorites get the longer reach; the nearby
+search radius is unaffected.
+
 ## Troubleshooting
 
 For watch-side crashes, blank screens, and memory errors, the canonical
