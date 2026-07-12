@@ -29,6 +29,16 @@ app booted with **3,328 bytes** of free heap and crashed the moment the
 first ~1 KB nearby-stops response was JSON-parsed. Deleting the app body
 freed heap almost byte-for-byte (−8.5 KB bytecode → +6.9 KB heap).
 
+**The arena size is fixed by the firmware, not shared with other apps.**
+The firmware hands the foreground app its RAM slice at launch regardless of
+what else is installed; other apps in the locker live in flash storage and
+occupy none of it. So uninstalling unused watch apps frees storage (whose
+exhaustion looks like "app installation failed", never "memory full") but
+cannot enlarge this arena by a single byte. (A background worker some apps
+run does use a little *system* RAM, but that's a separate pool — freeing it
+doesn't grow the app region either.) The only lever on the arena size is
+the firmware itself — see the escape hatch below.
+
 ### The escape hatch, and why it's dormant
 
 `src/c/mdbl.c` requests bigger heaps (8 KB stack / 32 KB slots / 32 KB
