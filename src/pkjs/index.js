@@ -63,6 +63,7 @@ var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
   agencies: ["SF", "BA", "AC", "GG", "SM"],
   radiusM: 500,
+  railRadiusX: 1, // BART/Caltrain favorites hide line = hideFavKm × this (1 = off)
   maxStops: 8,
   hideFavKm: 19 // favorites farther than this are left out of the rows response (~12 mi)
 };
@@ -194,6 +195,7 @@ Pebble.addEventListener("showConfiguration", function () {
   clay.setSettings("AgencyGG", s.agencies.indexOf("GG") >= 0);
   clay.setSettings("AgencySM", s.agencies.indexOf("SM") >= 0);
   clay.setSettings("RadiusM", s.radiusM);
+  clay.setSettings("RailRadiusX", s.railRadiusX);
   clay.setSettings("MaxStops", s.maxStops);
   clay.setSettings("HideFavKm", s.hideFavKm);
 
@@ -269,6 +271,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
     apiKey: String(val("ApiKey", "")).trim(),
     agencies: agencies,
     radiusM: Number(val("RadiusM", 500)) || 500,
+    railRadiusX: Number(val("RailRadiusX", 1)) || 1,
     maxStops: Number(val("MaxStops", 8)) || 8,
     hideFavKm: Number(val("HideFavKm", 19)) || 19
   };
@@ -366,9 +369,10 @@ function dirLinesSuffix(info) {
 
 // Build the display-ready rows list the watch renders verbatim: favorites
 // (nearest first, dimmed when serviceless) followed by nearby non-favorite
-// stops. Favorites farther than settings.hideFavKm are left out entirely —
-// no payload bytes, no arrival-check API calls (they reappear when you get
-// closer, and stay editable on the settings page). Subtitles carry the
+// stops. Favorites farther than settings.hideFavKm — × railRadiusX for
+// BART/Caltrain (getFavoriteStatus flags them far:1) — are left out
+// entirely: no payload bytes, no arrival-check API calls (they reappear
+// when you get closer, and stay editable on the settings page). Subtitles carry the
 // stop's direction and serving lines from the cached agency-wide stop-info
 // map. All formatting lives here because watch code costs watch heap
 // (playbook §B).
@@ -395,7 +399,9 @@ function buildRows(req, lat, lon, settings) {
       favs.forEach(function (f) {
         var st = status[f.agency + ":" + f.code];
         var dist = st && st.dist >= 0 ? st.dist : undefined;
-        if (dist !== undefined && dist > hideM) return; // beyond the hide line
+        // Beyond the hide line — per-agency: BART/Caltrain favorites reach
+        // hideFavKm × railRadiusX (getFavoriteStatus computes the flag).
+        if (st && st.far) return;
         // hasArr is a boolean from the stop-info map (false = checked, nothing
         // arriving; undefined = not checked, e.g. beyond the hide line — leave
         // those undimmed). It used to be 0/1, hence the earlier `=== 0`.
@@ -454,7 +460,7 @@ function buildRows(req, lat, lon, settings) {
       var agSet = {};
       stops.forEach(function (s) { agSet[s.agency] = 1; });
       (favStatus || []).forEach(function (f) {
-        if (f.dist >= 0 && f.dist <= hideM) agSet[f.agency] = 1;
+        if (f.dist >= 0 && !f.far) agSet[f.agency] = 1;
       });
       var infoByAgency = {};
       var list = Object.keys(agSet);

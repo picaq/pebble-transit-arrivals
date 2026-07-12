@@ -94,6 +94,22 @@ module.exports = [
         min: 1,
         max: 100,
         step: 1
+      },
+      {
+        type: "slider",
+        messageKey: "RailRadiusX",
+        label: "BART/Caltrain favorites distance multiplier",
+        description:
+          "Favorited BART and Caltrain stops stay on the list this many " +
+          "times farther away than the hide distance above (1 = same). " +
+          "Examples with 19 km: 3× = 57 km, 5× = 95 km, 10× = 190 km, " +
+          "30× = 570 km — keeps your starred train station on the watch " +
+          "for the whole ride. Only favorites get the longer reach; the " +
+          "nearby search is unaffected.",
+        defaultValue: 1,
+        min: 1,
+        max: 30,
+        step: 1
       }
     ]
   },
