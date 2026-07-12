@@ -473,7 +473,6 @@ function fetchNearby(fresh) {
     .catch(err => {
       state.nearbyPending = false;
       state.listRefreshing = false;
-      console.log("nearby failed: " + err.message);
       if (!state.rows.length) {
         // Rows are empty (boot, or the phone answered an error AFTER the
         // pre-parse hook released them) — show the error.
@@ -553,7 +552,6 @@ function fetchMore() {
     })
     .catch(err => {
       state.nearbyPending = false;
-      console.log("more failed: " + err.message);
     });
 }
 
@@ -627,7 +625,6 @@ function fetchArrivals() {
       state.arrivalsPending = false;
       state.refreshing = false; // release the hold before any early return
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
-      console.log("arrivals failed: " + err.message);
       if (!state.arrivals.length) {
         state.arrivalsStatus = "Error: " + err.message;
         draw();

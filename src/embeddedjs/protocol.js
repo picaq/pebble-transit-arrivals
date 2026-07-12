@@ -108,8 +108,7 @@ function handleResponse(raw) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    console.log("protocol: bad JSON from phone: " + e.message);
-    return;
+    return; // bad JSON from the phone (watch console.log never surfaces anyway)
   }
   const entry = pending.get(data.id);
   if (!entry) {
