@@ -317,6 +317,23 @@ established on real hardware in this repo:
   as "selecting into a stop crashes" because the load-more press is part
   of reaching a non-favorited stop. Confirms the endpoint: no payload or
   code fix changes this on 32 KB firmware.
+  **The boot ceiling is condition-dependent — a passing boot does not
+  certify a size (2026-07-12):** a working tree +251 B of mc.xsa over the
+  day's baseline booted cleanly in one session and crashed "memory full"
+  at boot, consistently, hours later with no code change (the phone-side
+  payload and BLE timing shifted under it). Re-measured that evening: a
+  +42 B tree crashed at boot 2/2 in the same minutes that the baseline
+  booted fine — so the boot margin above the current footprint can be
+  smaller than 42 B, and earlier same-week evidence that ~+100 B was the
+  line was just that day's conditions. mc.xsa size deltas ORDER builds
+  (bigger is strictly worse); they do not give a portable pass/fail
+  number, and one clean boot screenshot proves nothing about tomorrow.
+  Margin is recovered only by deleting bytecode: stripping four dead
+  `console.log` calls (watch logs never surface — "signals that lie")
+  bought 216 B. Rule: on 32 KB firmware, any net-positive bytecode
+  change is at risk of failing boot on a bad day; pay for features by
+  deleting code first, and park what still doesn't fit (branch
+  `now-polish-post-firmware`) until the ≥ v4.21.0 firmware lands.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
