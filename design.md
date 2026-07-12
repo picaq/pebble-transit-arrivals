@@ -211,10 +211,10 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 
 | Behavior | Value | Where |
 |---|---|---|
-| Row order | favorites (nearest first) then nearby stops (nearest first) | `buildRows()`, `index.js` |
+| Row order | favorites (nearest first, **capped at the 6 nearest** — `FAV_ROWS_MAX`; dist-unknown favorites sort last and cap out first) then nearby stops (nearest first); total capped at 14 (`WATCH_LIST_CAP`, mirrors the watch's `MAX_LIST_ROWS`). Capped-out favorites stay saved and reappear when nearer. 13 uncapped favorites once filled 1143 B alone and crashed the watch (playbook §B, fifteenth recurrence) | `buildRows()`, `index.js` |
 | Nearby stop count | `maxStops` setting (default 8), extended through dense clusters, hard ceiling 14. **Down "load more" appends** farther stops up to `MAX_LIST_ROWS`=14 total on the watch (the phone paginates via `buildMoreRows`, `off` = non-favorites already shown, `hardCeiling` override on `selectNearbyStops` reaches past the default 14 candidates) | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js`; `fetchMore()`, `main.js` |
 | Search radius | `radiusM` setting, default 500 m for the page-0 list; "load more" paginates from a wider `MORE_RADIUS_M`=5000 m search so farther stops become reachable. The `railRadiusX` multiplier deliberately does **not** touch the nearby search — it extends favorites only (see §8); an earlier version appended unstarred far stations here and was reverted 2026-07-12 by user choice | settings, `index.js`; `buildMoreRows`, `index.js` |
-| Rows payload budget | 880 B for page-0 lists (raised from 700 when subtitles grew direction/lines); **400 B for "load more" pages** (`MORE_BUDGET`, ≈5 stops/page — the one response parsed beside a retained full list, sized to the measured ~750 B worst-case free chunk, playbook §B thirteenth recurrence). Enforced on the **final serialized payload** in `respond()` (`id`/`stale:1` overhead included; budgeting before they were appended once put 884 B on the wire and crashed the watch mid-parse). Farthest non-favorite stops shed first, favorites never shed | `respond()` + `MORE_BUDGET`, `index.js` |
+| Rows payload budget | 880 B for page-0 lists (raised from 700 when subtitles grew direction/lines); **400 B for "load more" pages** (`MORE_BUDGET`, ≈5 stops/page — the one response parsed beside a retained full list, sized to the measured ~750 B worst-case free chunk, playbook §B thirteenth recurrence). Enforced on the **final serialized payload** in `respond()` (`id`/`stale:1` overhead included; budgeting before they were appended once put 884 B on the wire and crashed the watch mid-parse). The budget is **absolute**: farthest non-favorite stops shed first, then favorites farthest-first as last resort (shed floor is 1 row — "favorites never shed" let 13 favorites ship a 1143 B payload that crashed the watch parse, playbook §B fifteenth recurrence) | `respond()` + `MORE_BUDGET`, `index.js` |
 | Arrivals per stop | default 6; **Down "load more" raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 
 ## 10. Text truncation lengths
@@ -222,7 +222,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Text | Cap | Where |
 |---|---|---|
 | Nearby stop name | 28 chars (16 when >8 stops selected) | `transit511.js:213`, `:194` |
-| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss) | `transit511.js:321`, `buildRows()` |
+| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss); 16 when the assembled list is >8 rows, matching the nearby-stop rule | `transit511.js`, `buildRows()` in `index.js` |
 | Arrivals header (stop name) | none — fitted to pixels (`HEADER_TEXT_W`), not chars. Was an 18-char cap (`shortName()`), which ellipsized names long before they reached the edges of the bar; the phone already caps names at 28/24 chars (rows above), so the header string stays bounded without it | fitted in `draw()`, `main.js` |
 | Route/line | 10 chars (BART: 1-letter initials in list subtitles only, see §5) | `transit511.js:423` |
 | Destination | 24 chars | `transit511.js:428` |

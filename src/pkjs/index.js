@@ -157,6 +157,18 @@ var ROWS_STALE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
 // the next screenful.
 var MORE_RADIUS_M = 5000;
 var MORE_PAGE = 8;
+// Page-0 list shape. The watch renders at most 14 rows (MAX_LIST_ROWS,
+// main.js) and the 880 B budget fits ~10 compact rows, so favorites must
+// not monopolize it: 13 visible favorites once filled 1143 B by
+// themselves — respond() (whose shed floor was "never shed favorites")
+// sent the oversized payload, the watch's SECOND parse of it faulted
+// "memory full", and every non-favorite was shed, which read as "local
+// stops don't load" (playbook §B, fifteenth recurrence, 2026-07-12).
+// Nearest FAV_ROWS_MAX favorites show; local stops fill the rest. The
+// capped-out favorites stay saved and reappear when you're nearer them
+// (or trim the list / lower hideFavKm on the settings page).
+var FAV_ROWS_MAX = 6;
+var WATCH_LIST_CAP = 14; // mirror of main.js MAX_LIST_ROWS
 // Wire budget for "load more" pages — much tighter than the 880 B page-0
 // budget. A load-more response is the ONE payload the watch must parse
 // beside a retained full list (appending is its purpose), and the measured
@@ -311,17 +323,19 @@ function respond(id, body, budget) {
   // It used to run inside buildRows, before `id` (and `stale:1` on
   // cache-served replies) were appended — the overhead pushed an exactly-
   // budgeted list to 884 B on the wire and the watch crashed "memory full"
-  // parsing it (playbook §B, seventh recurrence). Farthest nearby stops
-  // shed first (rows arrive sorted); favorites are never shed. Callers can
-  // pass a tighter budget: "load more" pages must fit MORE_BUDGET because
-  // they are the one response that parses beside a retained full list
-  // (thirteenth recurrence).
+  // parsing it (playbook §B, seventh recurrence). The budget is ABSOLUTE:
+  // rows are farthest-first from the tail, non-favorites behind the
+  // favorites block, so popping sheds all non-favorites first and then
+  // favorites farthest-first as the last resort. Favorites used to be
+  // exempt — 13 of them alone made a 1143 B payload that crashed the
+  // watch parse (fifteenth recurrence); an oversized payload is strictly
+  // worse than a hidden row. Callers can pass a tighter budget: "load
+  // more" pages must fit MORE_BUDGET because they are the one response
+  // that parses beside a retained full list (thirteenth recurrence).
   if (body.type === "rows" && body.rows && body.rows.length) {
     var cap = budget || 880;
     var rows = body.rows;
-    var favCount = 0;
-    for (var i = 0; i < rows.length; i++) if (rows[i].f) favCount++;
-    while (payload.length > cap && rows.length > Math.max(favCount, 1)) {
+    while (payload.length > cap && rows.length > 1) {
       rows.pop();
       payload = JSON.stringify(body);
     }
@@ -419,6 +433,10 @@ function buildRows(req, lat, lon, settings) {
         favRows.push(row);
       });
       favRows.sort(function (x, y) { return x._d - y._d; });
+      // Nearest favorites only (dist-unknown ones sort last and cap out
+      // first) — see FAV_ROWS_MAX: an uncapped favorites block has filled
+      // the whole payload budget and crashed the watch.
+      if (favRows.length > FAV_ROWS_MAX) favRows.length = FAV_ROWS_MAX;
 
       var favKeys = {};
       favs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
@@ -437,6 +455,15 @@ function buildRows(req, lat, lon, settings) {
         if (noArr) row.m = 1;
         rows.push(row);
       });
+
+      // The watch renders 14 rows at most — anything past that is bytes
+      // the budget shed would spend compute on and the stale cache would
+      // hold for nothing. Long lists also compact favorite names to match
+      // the 16-char rule nearby stops already get (transit511.js).
+      if (rows.length > WATCH_LIST_CAP) rows.length = WATCH_LIST_CAP;
+      if (rows.length > 8) {
+        rows.forEach(function (r) { if (r.f) r.n = r.n.slice(0, 16); });
+      }
 
       // Response-order trace (★ = favorite) — reads as the on-watch order.
       console.log("rows order: " + rows.map(function (r) {
