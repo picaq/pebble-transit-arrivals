@@ -192,13 +192,13 @@ export const protocol = {
 
   /**
    * Ask the phone for the display-ready stop list (favorites + nearby). The
-   * phone owns favorites and takes the location fix itself. mig, when given,
-   * is the legacy watch-side favorites JSON string for one-time import.
-   * Resolves to { rows: [...] }.
+   * phone owns favorites and takes the location fix itself. (The one-time
+   * legacy-favorites migration payload was removed 2026-07-12 — it completed
+   * on the only device this app runs on; the phone's `mig` import handler
+   * remains.) Resolves to { rows: [...] }.
    */
-  nearbyStops(mig, fresh) {
+  nearbyStops(fresh) {
     const body = { cmd: "nearby" };
-    if (mig) body.mig = mig;
     if (fresh) body.fresh = 1;   // bypass the phone's instant stale reply
     return request(body);
   },

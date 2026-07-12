@@ -35,13 +35,13 @@ const fontSub = new render.Font("Gothic-Regular", 14);
 const fontBig = new render.Font("Leco-Bold", 26);
 const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arrivals screen
 // Minutes-column entries too wide for fontBig: the "Now" label and any 3-digit
-// wait (the column is only sized for "88" — see ARRIVAL_TEXT_X). Leco-Bold has
-// no size below 20, so narrowing means leaving Leco: Gothic's letterforms are
-// several pixels tighter than Leco's blocky caps. Same (family, size) as
-// fontLine, so share the object — a second Font would cost heap for nothing.
-// (Bitham-Black was tried and rejected: its only size is 30pt, which bleeds
-// under both the route number and the destination line.)
-const fontNarrow = fontLine;
+// wait (the column is only sized for "88" — see ARRIVAL_TEXT_X). Smallest Leco
+// size, so it matches fontBig's typeface; the width overflow this family
+// caused before is absorbed by the per-row push (a.lineX in the draw loop).
+// Costs a second Font object of heap — the Gothic-Bold 24 alias on fontLine
+// was free but mismatched. (Bitham-Black was tried and rejected: its only
+// size is 30pt, which bleeds under the route number and destination line.)
+const fontNarrow = new render.Font("Leco-Bold", 20);
 
 const BLACK = render.makeColor(0, 0, 0);
 const WHITE = render.makeColor(255, 255, 255);
@@ -108,7 +108,14 @@ const REVALIDATE_DELAY_MS = 5000;
 // is fitted/concatenated once when the underlying data changes, stored, and
 // only *drawn* here. Layout metrics are hoisted for the same reason.
 const LIST_TEXT_W = render.width - 12;
-const ARRIVAL_TEXT_X = 6 + render.getTextWidth("88", fontBig) + 8;
+// Minutes column (user mock, 2026-07-12): every minutes string right-aligns
+// to ARRIVAL_MIN_EDGE — sized for two fontBig digits or a 3-digit fontNarrow
+// wait, which is allowed to overhang the shared edge by 1 px (hence the -1).
+// Wider strings ("Now") keep the edge and grow left toward the screen edge.
+// Route numbers and destinations sit in one fixed column 9 px after it.
+const ARRIVAL_MIN_EDGE = 6 + Math.max(render.getTextWidth("88", fontBig),
+                                      render.getTextWidth("888", fontNarrow) - 1);
+const ARRIVAL_TEXT_X = ARRIVAL_MIN_EDGE + 9;
 const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
 // Header title budget. The title is centered, so this is what decides when a
 // stop name ellipsizes: 6 px of margin per side (same as the row margin), plus
@@ -332,17 +339,19 @@ function draw() {
         const a = state.arrivals[i];
         if (a.lineText === undefined) {
           // Fit lazily, in-frame, once per arrival (see fitVisibleRows()).
-          // Route-number x: the shared column, pushed right when the minutes
-          // string overflows the "88" budget ("Now", 3-digit waits) so it
-          // can never run under the route number. A cached number — steady-
-          // state draws still allocate nothing.
-          a.lineX = Math.max(ARRIVAL_TEXT_X,
-                             6 + render.getTextWidth(a.minStr, a.minFont) + 8);
-          a.lineText = ellipsize(a.line, fontLine, render.width - a.lineX - 4);
+          // Minutes right-align to ARRIVAL_MIN_EDGE (units digits line up
+          // to the pixel); fontNarrow ink sits 1 px left of fontBig's at
+          // equal advance, so it gets +1 (user-tuned). Anything wider than
+          // the column ("Now") grows left, clamped to the screen edge.
+          // A cached number — steady-state draws still allocate nothing.
+          a.minX = ARRIVAL_MIN_EDGE - render.getTextWidth(a.minStr, a.minFont);
+          if (a.minFont === fontNarrow) a.minX += 1;
+          if (a.minX < 0) a.minX = 0;
+          a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
           a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
         }
-        render.drawText(a.minStr, a.minFont, BLACK, 6, y);
-        render.drawText(a.lineText, fontLine, a.lineColor, a.lineX, y);
+        render.drawText(a.minStr, a.minFont, BLACK, a.minX, y);
+        render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
         render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
       }
@@ -423,11 +432,6 @@ function prepareArrivals(list) {
 
 /* ------------------------------------------------------------- data flow */
 
-// One-time migration: favorites used to live in watch localStorage. Send the
-// raw legacy JSON with nearby requests until one succeeds, then delete it —
-// after that the phone is the only owner of the favorites list.
-let migFavs = localStorage.getItem("favorites.v1");
-
 // The phone takes the location fix itself (navigator.geolocation in pkjs)
 // and answers with a display-ready rows list. In-flight guard: pull-to-
 // refresh (Up at the top of the list) must be a no-op while a request is
@@ -451,17 +455,11 @@ function fetchNearby(fresh) {
     state.status = "Finding stops…";
     draw();
   }
-  protocol.nearbyStops(migFavs, fresh)
+  protocol.nearbyStops(fresh)
     .then(resp => {
       state.nearbyPending = false;
       state.listRefreshing = false;
       const isStale = !!resp.stale;
-      // Migration completes only on a real (non-stale) response — the stale
-      // reply is served before the phone imports anything.
-      if (migFavs && !isStale) {
-        migFavs = null;
-        localStorage.removeItem("favorites.v1");
-      }
       setRowsFromResponse(resp.rows || []);
       state.status = state.rows.length ? "" : "No stops nearby";
       draw();

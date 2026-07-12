@@ -150,9 +150,10 @@ before inventing a size.
 
 - Watch: `localStorage` exists (strings only) but **this app stores nothing
   on the watch** — favorites moved to the phone (watch code/storage costs
-  watch heap, playbook §B); the watch only sends its legacy `favorites.v1`
-  once for migration, then deletes it. Also available: `device.keyValue`
-  and `device.files` for binary/large data.
+  watch heap, playbook §B); the watch-side legacy-favorites migration
+  sender was removed 2026-07-12 after the migration completed on the only
+  device this app runs on (the phone's `mig` import handler remains).
+  Also available: `device.keyValue` and `device.files` for binary/large data.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
   the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
   capped 10, edited from the watch's "fav" request and the Clay page's
