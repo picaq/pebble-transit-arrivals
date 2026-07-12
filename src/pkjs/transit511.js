@@ -18,8 +18,10 @@
  * Gotchas baked into this file:
  *   - 511 JSON responses begin with a UTF-8 BOM (\uFEFF). Strip before parse.
  *   - Rate limit: 60 requests / hour / key by default. Stop lists are cached
- *     for 7 days in phone localStorage so nearby searches cost 0 requests
- *     once warm; only StopMonitoring hits the network per refresh.
+ *     in phone localStorage so nearby searches cost 0 requests once warm;
+ *     only StopMonitoring hits the network per refresh. Past the 7-day TTL
+ *     the cached list is still served immediately and re-downloaded in the
+ *     background (stops change ~quarterly; never block the watch on one).
  *   - Stop lists are big (Muni ≈ 3,500 stops). They are compacted to
  *     [code, name, lat, lon] tuples before caching and are NEVER sent to
  *     the watch — only the top-N nearest stops go over AppMessage.
@@ -70,8 +72,10 @@ function loadStopCache(agency) {
     var raw = localStorage.getItem(STOP_CACHE_PREFIX + agency);
     if (!raw) return null;
     var entry = JSON.parse(raw);
-    if (Date.now() - entry.ts > STOP_CACHE_TTL_MS) return null;
-    return entry.stops; // [[code, name, lat, lon], ...]
+    return {
+      stops: entry.stops, // [[code, name, lat, lon], ...]
+      stale: Date.now() - entry.ts > STOP_CACHE_TTL_MS
+    };
   } catch (e) {
     return null;
   }
@@ -115,9 +119,13 @@ function parseStops(data) {
   return out;
 }
 
-function fetchStops(agency, apiKey, cb) {
-  var cached = loadStopCache(agency);
-  if (cached) return cb(null, cached);
+// One background revalidation per agency at a time — concurrent nearby
+// searches and favorite lookups all funnel through fetchStops, and a
+// stampede of duplicate multi-MB stop-list downloads would burn the
+// 60 req/hr budget for nothing.
+var stopRefreshing = {}; // agency -> 1 while a background download runs
+
+function downloadStops(agency, apiKey, cb) {
   var url = BASE + "/stops?api_key=" + encodeURIComponent(apiKey) +
     "&operator_id=" + encodeURIComponent(agency) + "&format=json";
   getJSON(url, function (err, data) {
@@ -126,6 +134,27 @@ function fetchStops(agency, apiKey, cb) {
     if (stops.length) saveStopCache(agency, stops);
     cb(null, stops);
   });
+}
+
+function fetchStops(agency, apiKey, cb) {
+  var cached = loadStopCache(agency);
+  if (cached) {
+    // Serve even an expired list immediately: stops change on the
+    // timescale of quarterly service changes, so days-stale is fine and
+    // the weekly re-download must never block the watch's request. The
+    // refresh runs off the critical path; a failure just leaves the
+    // stale cache in place for the next attempt.
+    if (cached.stale && !stopRefreshing[agency]) {
+      stopRefreshing[agency] = 1;
+      downloadStops(agency, apiKey, function (err) {
+        delete stopRefreshing[agency];
+        console.log("511: background stop refresh " + agency +
+          (err ? " failed: " + err.message : " ok"));
+      });
+    }
+    return cb(null, cached.stops);
+  }
+  downloadStops(agency, apiKey, cb); // cold cache: nothing to serve, block
 }
 
 /* --------------------------------------------------------------- geometry */
