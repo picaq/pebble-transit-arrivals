@@ -116,6 +116,21 @@ const LIST_TEXT_W = render.width - 12;
 const ARRIVAL_MIN_EDGE = 6 + Math.max(render.getTextWidth("88", fontBig),
                                       render.getTextWidth("888", fontNarrow) - 1);
 const ARRIVAL_TEXT_X = ARRIVAL_MIN_EDGE + 9;
+// "Now" is one fixed string, so its draw x's are module constants (all
+// hardware-measured and user-tuned, 2026-07-12; keeps per-row math out of
+// the draw loop — bytecode is arena, playbook §B):
+//   NOW_X       right edge of the column minus "Now"'s width, +2 px (the
+//               fontNarrow +1 ink offset plus one more the user asked for)
+//   NOW_NO_X    "No" kerned +1 px toward the "w" to tighten the o–w gap
+//   NOW_W_X     the "w" kept at its one-string pen position
+//   NOW_SLIVER_X  a 1 px sliver completing Leco-20's lowercase-w final
+//               stroke (the bitmap is one column short: 2 px wide where
+//               every other stroke is 3; the intact uppercase "W" has
+//               angled strokes the user rejected)
+const NOW_X = ARRIVAL_MIN_EDGE - render.getTextWidth("Now", fontNarrow) + 2;
+const NOW_NO_X = NOW_X + 1;
+const NOW_W_X = NOW_X + render.getTextWidth("No", fontNarrow);
+const NOW_SLIVER_X = NOW_X + 41;
 const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
 // Header title budget. The title is centered, so this is what decides when a
 // stop name ellipsizes: 6 px of margin per side (same as the row margin), plus
@@ -341,16 +356,27 @@ function draw() {
           // Fit lazily, in-frame, once per arrival (see fitVisibleRows()).
           // Minutes right-align to ARRIVAL_MIN_EDGE (units digits line up
           // to the pixel); fontNarrow ink sits 1 px left of fontBig's at
-          // equal advance, so it gets +1 (user-tuned). Anything wider than
-          // the column ("Now") grows left, clamped to the screen edge.
-          // A cached number — steady-state draws still allocate nothing.
+          // equal advance, so it gets +1, and a trailing "1" digit leaves
+          // its right side of the advance empty, so it gets +2 (both
+          // user-tuned; recomputed on refresh, so a tick-down realigns).
+          // Only numeric strings use minX — "Now" draws at the NOW_*
+          // constants. A cached number — steady-state draws still
+          // allocate nothing.
           a.minX = ARRIVAL_MIN_EDGE - render.getTextWidth(a.minStr, a.minFont);
           if (a.minFont === fontNarrow) a.minX += 1;
-          if (a.minX < 0) a.minX = 0;
+          if (a.min % 10 === 1) a.minX += 2;
           a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
           a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
         }
-        render.drawText(a.minStr, a.minFont, BLACK, a.minX, y);
+        if (a.min <= 0) {
+          // Kerned split draw + stroke-completing sliver; see the NOW_*
+          // constants. Allocation-free: fixed literals and constants.
+          render.drawText("No", fontNarrow, BLACK, NOW_NO_X, y);
+          render.drawText("w", fontNarrow, BLACK, NOW_W_X, y);
+          render.fillRectangle(BLACK, NOW_SLIVER_X, y + 3, 1, 14);
+        } else {
+          render.drawText(a.minStr, a.minFont, BLACK, a.minX, y);
+        }
         render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
         render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
