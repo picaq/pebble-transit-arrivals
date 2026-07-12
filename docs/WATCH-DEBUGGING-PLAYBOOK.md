@@ -334,6 +334,28 @@ established on real hardware in this repo:
   change is at risk of failing boot on a bad day; pay for features by
   deleting code first, and park what still doesn't fit (branch
   `now-polish-post-firmware`) until the ≥ v4.21.0 firmware lands.
+- **Fifteenth recurrence (2026-07-12, captured live): a payload-budget
+  *exemption* grew until it WAS the payload — "favorites are never shed"
+  let 13 visible favorites fill 1143 B on the wire.** `respond()`'s shed
+  floor was `max(favCount, 1)`, so once the favorites block alone
+  exceeded 880 B the loop stopped and the oversized payload shipped.
+  Two user-visible symptoms, reported as one bug: every non-favorite was
+  shed ("local stops don't load"), and the watch crashed "memory full" —
+  the BOOT parse of 1153 B survived (empty list, boot condition), the
+  revalidation/refresh parse beside the retained rows faulted seconds
+  later, every time (ninth-recurrence arithmetic: parse ≈ 2× wire needs
+  >2.2 KB chunk; ~2 KB free). Fix (phone-only): favorites capped at the
+  nearest `FAV_ROWS_MAX`=6 on page 0 (capped-out ones stay saved and
+  reappear when nearer), total rows capped at 14 (the watch's
+  `MAX_LIST_ROWS`), favorite names compacted to 16 chars on >8-row lists,
+  and the budget made **absolute** — the shed floor is now 1 row, so
+  favorites shed farthest-first as the last resort. Lessons: (1) any
+  "never shed / never drop" class must still bow to the wire budget —
+  an exemption without its own cap is a payload bomb armed by user data
+  growth (favorites accumulate); (2) a "feature stopped working" report
+  (missing rows) and a crash can be the same defect — the shed loop was
+  silently eating the rows *and* overrunning the budget from the same
+  line.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
