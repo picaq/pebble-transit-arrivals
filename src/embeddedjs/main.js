@@ -39,6 +39,8 @@ const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arriva
 // no size below 20, so narrowing means leaving Leco: Gothic's letterforms are
 // several pixels tighter than Leco's blocky caps. Same (family, size) as
 // fontLine, so share the object — a second Font would cost heap for nothing.
+// (Bitham-Black was tried and rejected: its only size is 30pt, which bleeds
+// under both the route number and the destination line.)
 const fontNarrow = fontLine;
 
 const BLACK = render.makeColor(0, 0, 0);
@@ -292,7 +294,7 @@ function draw() {
         const y = HEADER_H + i * ROW_H;
         const selected = idx === state.sel;
         if (selected) render.fillRectangle(ACCENT, 0, y, render.width, ROW_H);
-        // Dimmed rows (favorite with nothing arriving) go gray;
+        // Dimmed rows (stop with nothing arriving) go gray;
         // selection stays white-on-accent so it's always readable.
         const fg = selected ? WHITE : row.dim ? GRAY : BLACK;
         const sub = selected ? WHITE : row.dim ? GRAY : SUB_GRAY;
@@ -330,11 +332,17 @@ function draw() {
         const a = state.arrivals[i];
         if (a.lineText === undefined) {
           // Fit lazily, in-frame, once per arrival (see fitVisibleRows()).
-          a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
+          // Route-number x: the shared column, pushed right when the minutes
+          // string overflows the "88" budget ("Now", 3-digit waits) so it
+          // can never run under the route number. A cached number — steady-
+          // state draws still allocate nothing.
+          a.lineX = Math.max(ARRIVAL_TEXT_X,
+                             6 + render.getTextWidth(a.minStr, a.minFont) + 8);
+          a.lineText = ellipsize(a.line, fontLine, render.width - a.lineX - 4);
           a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
         }
         render.drawText(a.minStr, a.minFont, BLACK, 6, y);
-        render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
+        render.drawText(a.lineText, fontLine, a.lineColor, a.lineX, y);
         render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
       }

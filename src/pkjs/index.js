@@ -419,11 +419,17 @@ function buildRows(req, lat, lon, settings) {
       var rows = favRows.map(function (r) { delete r._d; return r; });
       stops.forEach(function (s) {
         if (favKeys[s.agency + ":" + s.code]) return;
-        rows.push({
+        // Same serviceless signal as favorites: agency map loaded but the
+        // stop is absent = checked, nothing arriving (map missing entirely =
+        // unchecked, leave undimmed).
+        var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
+        var row = {
           a: s.agency, c: s.code, n: s.name,
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
-            dirLinesSuffix(infoFor(s.agency, s.code))
-        });
+            (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
+        };
+        if (noArr) row.m = 1;
+        rows.push(row);
       });
 
       // Response-order trace (★ = favorite) — reads as the on-watch order.
@@ -501,11 +507,15 @@ function buildMoreRows(req, lat, lon, settings) {
       var rows = [];
       stops.forEach(function (s) {
         if (favKeys[s.agency + ":" + s.code]) return; // favorites already shown
-        rows.push({
+        // Same serviceless dimming as buildRows: in-map = something coming.
+        var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
+        var row = {
           a: s.agency, c: s.code, n: s.name,
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
-            dirLinesSuffix(infoFor(s.agency, s.code))
-        });
+            (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
+        };
+        if (noArr) row.m = 1;
+        rows.push(row);
       });
       rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
       var body = { type: "rows", rows: rows };

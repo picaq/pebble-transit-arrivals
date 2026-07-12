@@ -24,7 +24,7 @@ CLAUDE.md §11–12 and `docs/WATCH-DEBUGGING-PLAYBOOK.md`):
 
 | Screen | What it shows | Entry / exit |
 |---|---|---|
-| LIST (`MODE_LIST`) | Header "Transit Glance", then favorites (★, nearest first, dimmed when nothing is arriving, hidden entirely beyond the hide-distance setting) followed by nearby stops | App start; Back from ARRIVALS |
+| LIST (`MODE_LIST`) | Header "Transit Glance", then favorites (★, nearest first, hidden entirely beyond the hide-distance setting) followed by nearby stops; any row — favorite or not — is dimmed when nothing is arriving | App start; Back from ARRIVALS |
 | ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, scrollable arrival rows (~4 visible, `VISIBLE_ARRIVALS`), footer favorite hint | Select on a list row; Back returns |
 
 All rendering is Poco (immediate mode, full redraw) in
@@ -43,7 +43,7 @@ fits text to the screen and handles buttons.
 | `fontSub` | Gothic-Regular 14 | Subtitles, destination line, status text, footer hint |
 | `fontBig` | Leco-Bold 26 | Minutes number on arrivals rows |
 | `fontLine` | Gothic-Bold 24 | Route/line number on arrivals rows |
-| `fontNarrow` | Gothic-Bold 24 | Minutes-column entries that don't fit `fontBig`: the "Now" label and any wait of 100+ minutes (the column is sized for `"88"` — see `ARRIVAL_TEXT_X` in §4; three Leco-Bold 26 digits run into the route text, and the phone never caps `min`). Was Leco-Bold 20, but Leco-Bold has no size below 20 (playbook §A), so narrowing it meant leaving Leco — Gothic's letterforms are a few px tighter than Leco's blocky caps. Aliases the `fontLine` object (same family/size) instead of allocating a second Font |
+| `fontNarrow` | Gothic-Bold 24 | Minutes-column entries that don't fit `fontBig`: the "Now" label and any wait of 100+ minutes (the column is sized for `"88"` — see `ARRIVAL_TEXT_X` in §4; three Leco-Bold 26 digits run into the route text, and the phone never caps `min`). Was Leco-Bold 20, but Leco-Bold has no size below 20 (playbook §A), so narrowing it meant leaving Leco — Gothic's letterforms are a few px tighter than Leco's blocky caps. Aliases the `fontLine` object (same family/size) instead of allocating a second Font. Bitham-Black was tried (2026-07-12) and rejected: its only size is 30pt, which bleeds under both the route number and the destination line |
 
 Available families: Gothic (regular/bold), Bitham, Roboto, Leco (best for
 numbers), Droid — **only specific sizes exist per family** (constraint 2
@@ -79,7 +79,7 @@ white text.
 | `ARRIVAL_ROW_H` | 44 px | Arrivals row height (line at y, dest at y+26) |
 | `VISIBLE_ROWS` | derived | `floor((screen.height − HEADER_H) / ROW_H)` |
 | `LIST_TEXT_W` | derived | `screen.width − 12` — list text budget before ellipsizing |
-| `ARRIVAL_TEXT_X` | derived | Minutes-column width: width of "88" in `fontBig` + margins. Only two `fontBig` digits fit — anything wider ("Now", a 100+ minute wait) draws in `fontNarrow` instead of widening the column, so the route/destination text keeps its budget |
+| `ARRIVAL_TEXT_X` | derived | Minutes-column width: width of "88" in `fontBig` + margins. Only two `fontBig` digits fit — anything wider ("Now", a 100+ minute wait) draws in `fontNarrow` instead of widening the column, so the route/destination text keeps its budget. Per-row guard: if the minutes string is still wider than the column, that row's route number shifts right past it (`a.lineX`, computed in-frame in the lazy-fit block) and its line text is ellipsized to the reduced width — the minutes string can never run under the route number |
 | `ARRIVAL_TEXT_W` | derived | Remaining width for line/destination text |
 
 Everything derives from `screen.width`/`screen.height` — keep it that way
@@ -201,7 +201,7 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Max favorites stored | 20 (storage cap — hidden records accumulate until trashed) | `MAX_FAVORITES`, `index.js` |
 | Hide a favorite from the list | (a) farther than `hideFavKm` setting (default 19 km / ~12 mi) — reappears when near; (b) `hide` flag (watch unstar or settings toggle). Both keep it saved and cost no payload bytes or API calls while hidden | `buildRows()` + `maxCheckM` arg to `getFavoriteStatus()`, `index.js` / `transit511.js` |
 | Delete a favorite | settings page 🗑 toggle + save; `window.confirm` dialog in the webview (degrades to no-dialog if Clay's DOM changes — see `clayCustomFn`) | `showConfiguration` / `webviewclosed`, `index.js` |
-| Dim a favorite | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map — no per-favorite API calls | `buildRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
+| Dim a row (favorite or nearby stop) | nothing currently arriving (subtitle gains "· no arrivals"); determined by absence from the agency-wide stop-info map (skipped when that map failed to load — unknown stays undimmed) — no per-stop API calls | `buildRows()` + `buildMoreRows()`, `index.js`; `getStopInfo()`, `transit511.js` |
 | New favorite position | added to the front of the saved list | `fav` handler, `index.js` |
 | One-time migration | the watch sends its legacy watch-side `favorites.v1` JSON with nearby requests (`mig` field) until one succeeds, then deletes it | `main.js`, `importLegacyFavs()` in `index.js` |
 
