@@ -226,13 +226,9 @@ function findNearbyStops(lat, lon, settings, cb) {
       // hardCeiling override lets "load more" pagination reach past the
       // default 14-candidate ceiling (index.js buildMoreRows).
       var selected = selectNearbyStops(results, settings.maxStops, settings.hardCeiling);
-      // Extending past the usual ~8-stop payload budget: compact names
-      // further rather than raising the per-stop byte cost unbounded.
-      if (selected.length > 8) {
-        selected = selected.map(function (s) {
-          return { agency: s.agency, code: s.code, name: s.name.slice(0, 16), dist: s.dist };
-        });
-      }
+      // Display-name compression (street-type abbreviation + the ≤20-char
+      // LIST_NAME_MAX cut) happens in index.js compressStopName(), on top
+      // of the 28-char payload cap applied at collection time above.
       return cb(null, selected);
     }
     var agency = agencies.shift();

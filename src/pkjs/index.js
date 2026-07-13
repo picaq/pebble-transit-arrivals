@@ -381,6 +381,47 @@ function dirLinesSuffix(info) {
   return s;
 }
 
+// List-row stop names: the row fits ~17 chars of Gothic-Bold 18 before the
+// watch ellipsizes, and a dumb character cap ("Mansell St & San") spends
+// that width on street-type words instead of the distinguishing cross
+// street. Compress instead of cutting: always shorten street-type words
+// ("Powell Street" → "Powell St"); if the name still exceeds LIST_NAME_MAX,
+// drop the types where they end an intersection segment ("San Bruno Ave &
+// Mansell St" → "San Bruno & Mansell"); only then hard-cut. Phone-side
+// only — the watch renders the string verbatim, and a watch-side expansion
+// dictionary would cost bytecode = heap (playbook §B).
+var LIST_NAME_MAX = 20;
+var STREET_TYPES = [
+  ["Street", "St"], ["Avenue", "Ave"], ["Boulevard", "Blvd"],
+  ["Road", "Rd"], ["Drive", "Dr"], ["Court", "Ct"], ["Place", "Pl"],
+  ["Terrace", "Ter"], ["Lane", "Ln"], ["Highway", "Hwy"],
+  ["Square", "Sq"], ["Circle", "Cir"], ["Parkway", "Pkwy"],
+  ["Station", "Sta"]
+];
+var ABBREV_RES = STREET_TYPES.map(function (t) {
+  return [new RegExp("\\b" + t[0] + "\\b", "gi"), t[1]];
+});
+// Trailing street type of one intersection segment. The required leading
+// space keeps a Saint-style street name intact ("St Marys Ave" loses only
+// the "Ave"), and anchoring to the segment end keeps interior words
+// ("St Francis Blvd" keeps "St Francis").
+var TYPE_SUFFIX_RE = new RegExp(
+  " (" + STREET_TYPES.map(function (t) { return t[1]; }).join("|") + ")$"
+);
+function compressStopName(name) {
+  var out = String(name);
+  ABBREV_RES.forEach(function (r) { out = out.replace(r[0], r[1]); });
+  if (out.length > LIST_NAME_MAX) {
+    out = out.split(" & ").map(function (part) {
+      return part.replace(TYPE_SUFFIX_RE, "");
+    }).join(" & ");
+  }
+  if (out.length > LIST_NAME_MAX) {
+    out = out.slice(0, LIST_NAME_MAX).replace(/[ &,]+$/, "");
+  }
+  return out;
+}
+
 // Build the display-ready rows list the watch renders verbatim: favorites
 // (nearest first, dimmed when serviceless) followed by nearby non-favorite
 // stops. Favorites farther than settings.hideFavKm — × railRadiusX for
@@ -422,7 +463,7 @@ function buildRows(req, lat, lon, settings) {
         var noArr = !!st && st.hasArr === false;
         var row = {
           a: f.agency, c: f.code,
-          n: (st && st.name) || f.name,
+          n: compressStopName((st && st.name) || f.name),
           s: f.agency +
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(f.agency, f.code))),
@@ -448,7 +489,7 @@ function buildRows(req, lat, lon, settings) {
         // unchecked, leave undimmed).
         var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
         var row = {
-          a: s.agency, c: s.code, n: s.name,
+          a: s.agency, c: s.code, n: compressStopName(s.name),
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
         };
@@ -458,12 +499,8 @@ function buildRows(req, lat, lon, settings) {
 
       // The watch renders 14 rows at most — anything past that is bytes
       // the budget shed would spend compute on and the stale cache would
-      // hold for nothing. Long lists also compact favorite names to match
-      // the 16-char rule nearby stops already get (transit511.js).
+      // hold for nothing.
       if (rows.length > WATCH_LIST_CAP) rows.length = WATCH_LIST_CAP;
-      if (rows.length > 8) {
-        rows.forEach(function (r) { if (r.f) r.n = r.n.slice(0, 16); });
-      }
 
       // Response-order trace (★ = favorite) — reads as the on-watch order.
       console.log("rows order: " + rows.map(function (r) {
@@ -543,7 +580,7 @@ function buildMoreRows(req, lat, lon, settings) {
         // Same serviceless dimming as buildRows: in-map = something coming.
         var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
         var row = {
-          a: s.agency, c: s.code, n: s.name,
+          a: s.agency, c: s.code, n: compressStopName(s.name),
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
         };
