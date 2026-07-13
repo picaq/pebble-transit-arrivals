@@ -39,7 +39,7 @@ run does use a little *system* RAM, but that's a separate pool — freeing it
 doesn't grow the app region either.) The only lever on the arena size is
 the firmware itself — see the escape hatch below.
 
-### The escape hatch, and why it's dormant
+### The escape hatch, no longer dormant on the dev watch
 
 `src/c/mdbl.c` requests bigger heaps (8 KB stack / 32 KB slots / 32 KB
 chunks ≈ 72 KB total, out of emery's ~122 KB app RAM) via
@@ -52,11 +52,19 @@ chunks ≈ 72 KB total, out of emery's ~122 KB app RAM) via
    (a shadowed local variable, fixed in `coredevices/pebbleos` commit
    `76cd732`) that reads the sizes and then throws them away.
 
-So on current-at-time-of-writing firmware the request is a no-op, and the
-app must genuinely fit in 32 KB. **When the firmware update arrives,
-nothing needs changing** — the record starts working automatically. You
-can confirm with the instrumentation log (below): "Chunk available" jumps
-from ~8192 to 32768.
+So below v4.21.0 the request is a no-op, and the app must genuinely fit
+in 32 KB. When the firmware update arrives, nothing needs changing — the
+record starts working automatically. You can confirm with the
+instrumentation log (below): "Chunk available" jumps from ~8192 to 32768.
+
+**This happened on the dev watch 2026-07-12** (firmware v4.23.0):
+instruments confirm chunk 32768 / slot 32752 / stack 8192 — the full
+~72 KB. The 32 KB numbers throughout this doc remain the portable
+baseline (any un-updated watch reverts to them), but on the dev device
+the binding constraint is gone. The defensive trades bought under 32 KB
+(payload budgets, serve-as-final rows cache, frame-hold refresh, refresh
+cooldown) are now deliberately reversible — the relaxation checklist
+with code locations lives in the playbook §B, at the RESOLVED entry.
 
 ## The design rules that follow
 

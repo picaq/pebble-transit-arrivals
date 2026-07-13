@@ -299,7 +299,9 @@ established on real hardware in this repo:
   allocator asks next. **Rule: once the carved arena approaches 32 KB with
   pools near-full at idle, STOP writing watch-side defenses.** The levers
   left are firmware ≥ v4.21.0 (72 KB VM via mdbl.c — ends this entire
-  §B recurrence class) or *removing* embedded code, not adding it.
+  §B recurrence class; landed on the dev watch 2026-07-12 as v4.23.0,
+  see the RESOLVED entry below) or *removing* embedded code, not
+  adding it.
   Open question for post-firmware: in this capture an arrivals request
   went ~12 s with no pkjs response logged before the crash sequence — if
   unanswered requests recur, investigate AppMessage loss; under the
@@ -400,6 +402,33 @@ established on real hardware in this repo:
   old firmware the size fields simply never apply, so shrinking the
   stack request cannot hand arena to the slot pool. On old firmware the
   only lever is shrinking embedded code.
+- **RESOLVED on the dev watch 2026-07-12 (firmware v4.23.0): mdbl.c's
+  record is honored.** Instruments confirm chunk available 32768, slot
+  available 32752, stack 8192 (≈ the requested 72 KB; idle chunk use
+  ~9 KB). The §B recurrence class no longer binds on this device — the
+  history above stays canonical for anyone on 32 KB firmware, and the
+  mc.xsa boot-ceiling arithmetic is obsolete *here* but returns the
+  moment this app targets an un-updated watch. **Deliberately-reversible
+  trades bought under the 32 KB arena, now candidates to relax** (one at
+  a time, each with a hardware boot + arrivals verification; every one
+  regresses a 32 KB-firmware device if relaxed):
+  1. Rows payload budget 880 B + `FAV_ROWS_MAX` 6 (`respond()` /
+     `buildRows`, `index.js`) — more rows / less shedding per page 0.
+  2. `MORE_BUDGET` 400 B (`buildMoreRows`) — bigger "load more" pages
+     (currently ~5 stops per Down-press).
+  3. Serve-as-final rows cache, `ROWS_FRESH_MS` 3 min (`index.js`) —
+     could restore stale-while-revalidate for an always-instant boot
+     list (the sixteenth recurrence's trigger was arena saturation,
+     gone at 72 KB), reviving the watch's `scheduleRevalidate()`
+     machinery instead of deleting it.
+  4. Frame-hold refresh (rows released pre-parse via
+     `protocol.onBeforeParse`) and the 3 s `REFRESH_COOLDOWN_MS`
+     (`main.js`) — smoother/snappier manual refresh.
+  Watch-side `scheduleRevalidate()` is dead code unless (3) revives it —
+  otherwise delete it with the next embedded change. Do not relax any of
+  these casually mid-bugfix: each was pinned to a numbered recurrence
+  above, and design.md §6/§7 documents the user-facing behavior each one
+  sets.
 
 Debugging order:
 
