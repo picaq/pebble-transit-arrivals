@@ -414,8 +414,12 @@ established on real hardware in this repo:
   regresses a 32 KB-firmware device if relaxed):
   1. Rows payload budget 880 B + `FAV_ROWS_MAX` 6 (`respond()` /
      `buildRows`, `index.js`) — more rows / less shedding per page 0.
+     **RELAXED 2026-07-12** to `ROWS_BUDGET` = 1600 B / 10 (fits all 14
+     rows in one reply), together with (2) — both are phone-side
+     constants covered by the same boot + arrivals check.
   2. `MORE_BUDGET` 400 B (`buildMoreRows`) — bigger “load more” pages
-     (currently ~5 stops per Down-press).
+     (was ~5 stops per Down-press). **RELAXED 2026-07-12** to 1000 B (a
+     full 8-stop `MORE_PAGE`).
   3. Serve-as-final rows cache, `ROWS_FRESH_MS` 3 min (`index.js`) —
      could restore stale-while-revalidate for an always-instant boot
      list (the sixteenth recurrence’s trigger was arena saturation,

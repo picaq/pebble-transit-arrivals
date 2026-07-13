@@ -166,24 +166,34 @@ var ROWS_FRESH_MS = 3 * 60 * 1000; // 3 min
 var MORE_RADIUS_M = 5000;
 var MORE_PAGE = 8;
 // Page-0 list shape. The watch renders at most 14 rows (MAX_LIST_ROWS,
-// main.js) and the 880 B budget fits ~10 compact rows, so favorites must
-// not monopolize it: 13 visible favorites once filled 1143 B by
-// themselves — respond() (whose shed floor was "never shed favorites")
-// sent the oversized payload, the watch's SECOND parse of it faulted
-// "memory full", and every non-favorite was shed, which read as "local
-// stops don't load" (playbook §B, fifteenth recurrence, 2026-07-12).
-// Nearest FAV_ROWS_MAX favorites show; local stops fill the rest. The
-// capped-out favorites stay saved and reappear when you're nearer them
-// (or trim the list / lower hideFavKm on the settings page).
-var FAV_ROWS_MAX = 6;
+// main.js); the ROWS_BUDGET below fits all 14, so FAV_ROWS_MAX is now a
+// pure anti-monopoly cap (favorites can't push every nearby stop off the
+// list), sized so the whole favorites roster shows when you're near it.
+// Under the old 880 B budget it was 6: 13 visible favorites once filled
+// 1143 B by themselves — respond() (whose shed floor was "never shed
+// favorites") sent the oversized payload, the watch's SECOND parse of it
+// faulted "memory full", and every non-favorite was shed, which read as
+// "local stops don't load" (playbook §B, fifteenth recurrence,
+// 2026-07-12). Nearest FAV_ROWS_MAX favorites show; local stops fill the
+// rest; capped-out favorites stay saved and reappear when you're nearer
+// them (or trim the list / lower hideFavKm on the settings page).
+var FAV_ROWS_MAX = 10;
 var WATCH_LIST_CAP = 14; // mirror of main.js MAX_LIST_ROWS
-// Wire budget for "load more" pages — much tighter than the 880 B page-0
-// budget. A load-more response is the ONE payload the watch must parse
-// beside a retained full list (appending is its purpose), and the measured
-// worst-case free chunk at that moment is ~750 B with a parse costing ~2×
-// wire size (playbook §B, thirteenth recurrence). ~400 B ≈ 5 stops/page;
-// the watch just asks again for the next page.
-var MORE_BUDGET = 400;
+// Page-0 wire budget, enforced in respond(). 1600 B fits 14 compact rows
+// (~100 B each) plus wrapper. RELAXED 2026-07-12 from 880 B — a 32 KB-arena
+// trade (playbook §B, seventh/fifteenth recurrences) that the 72 KB heap
+// on firmware ≥ v4.21.0 lifted; the parse spike is ~2× wire size, trivial
+// against ~23 KB of free chunk. Revert to 880 for any 32 KB-firmware
+// device. Budgets now bound the parse spike and the AppMessage transport,
+// not survival.
+var ROWS_BUDGET = 1600;
+// Wire budget for "load more" pages — tighter than page 0 because a
+// load-more response is the ONE payload the watch must parse beside a
+// retained full list (appending is its purpose). 1000 B fits a full
+// MORE_PAGE of 8 stops. RELAXED 2026-07-12 from 400 B, which was sized to
+// the measured ~750 B worst-case free chunk on the 32 KB arena (playbook
+// §B, thirteenth recurrence) — revert to 400 for 32 KB firmware.
+var MORE_BUDGET = 1000;
 
 function loadRowsCache() {
   try {
@@ -341,7 +351,7 @@ function respond(id, body, budget) {
   // more" pages must fit MORE_BUDGET because they are the one response
   // that parses beside a retained full list (thirteenth recurrence).
   if (body.type === "rows" && body.rows && body.rows.length) {
-    var cap = budget || 880;
+    var cap = budget || ROWS_BUDGET;
     var rows = body.rows;
     while (payload.length > cap && rows.length > 1) {
       rows.pop();
@@ -516,7 +526,7 @@ function buildRows(req, lat, lon, settings) {
       }).join(", "));
 
       var body = { type: "rows", rows: rows };
-      // Budgeting to 880 B happens in respond(), on the final serialized
+      // Budgeting to ROWS_BUDGET happens in respond(), on the final serialized
       // payload. Persist the list first for instant stale-while-revalidate
       // replies (the cache may hold a row or two more than fits one reply;
       // stale serves re-shed in respond). Only the normal page-0 list is

@@ -139,9 +139,10 @@ before inventing a size.
   would race pkjs startup and vanish. pkjs sends `SettingsChanged: 1` from
   its `ready` handler; the watch’s `protocol.onSettingsChanged` runs the
   first nearby fetch. Keep this when touching either side.
-- Payload discipline: JSON strings under ~880 B for the rows response (the
-  watch parses it with only a few KB of chunk-heap slack on 32 KB-arena
-  firmware — playbook §B), ~1 KB elsewhere. Truncate names, cap list
+- Payload discipline: rows responses fit `ROWS_BUDGET` (1600 B; relaxed
+  2026-07-12 from 880 B under the 72 KB heap — on 32 KB-arena firmware
+  the watch parses with only a few KB of chunk-heap slack, playbook §B,
+  and 880 B is the ceiling), ~1 KB elsewhere. Truncate names, cap list
   lengths, shed farthest stops first. If you need more, add chunking
   (`seq`/`total` fields) — do not just raise the caps.
 - Request/response correlation is via an `id` field; see protocol.js.
