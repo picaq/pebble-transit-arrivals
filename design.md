@@ -220,11 +220,28 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 
 | Text | Cap | Where |
 |---|---|---|
-| Nearby stop name | 28 chars (16 when >8 stops selected) | `transit511.js:213`, `:194` |
-| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss); 16 when the assembled list is >8 rows, matching the nearby-stop rule | `transit511.js`, `buildRows()` in `index.js` |
+| Nearby stop name | 28 chars at collection (payload bound), then the `compressStopName()` pipeline below to ≤20 (`LIST_NAME_MAX`) | `findNearbyStops()`, `transit511.js`; `compressStopName()`, `index.js` |
+| Favorite name from cached stop list | 24 chars (falls back to the saved favorite name on a cache miss), then the same `compressStopName()` pipeline | `getFavoriteStatus()`, `transit511.js`; `buildRows()`, `index.js` |
 | Arrivals header (stop name) | none — fitted to pixels (`HEADER_TEXT_W`), not chars. Was an 18-char cap (`shortName()`), which ellipsized names long before they reached the edges of the bar; the phone already caps names at 28/24 chars (rows above), so the header string stays bounded without it | fitted in `draw()`, `main.js` |
 | Route/line | 10 chars (BART: 1-letter initials in list subtitles only, see §5) | `transit511.js:423` |
 | Destination | 24 chars | `transit511.js:428` |
+
+**Stop names are compressed, not cut** (`compressStopName()`, `index.js` —
+applied to every list row in `buildRows`/`buildMoreRows`; the arrivals
+header reuses the row's name, so it inherits this). The old rule — hard
+16-char cut whenever the list exceeded 8 rows — spent the row's ~17
+renderable chars on street-type words and killed the distinguishing cross
+street ("Mansell St & San", user report 2026-07-12). The pipeline, each
+step only if the name still exceeds `LIST_NAME_MAX` = 20: (1) abbreviate
+street-type words everywhere ("Powell Street" → "Powell St"; this step is
+unconditional), (2) drop street types that end an intersection segment
+("San Bruno Ave & Mansell St" → "San Bruno & Mansell" — a leading
+Saint-style "St" is safe: only a *trailing* type with a space before it is
+dropped), (3) hard-cut at 20 and trim any dangling "&". Names already ≤20
+keep their types, so "4th St & Market St" stays unambiguous (SF has both
+4th St and 4th Ave); only too-long names trade that suffix for the cross
+street. This must stay phone-side: a watch-side expansion dictionary would
+cost bytecode = heap (playbook §B).
 
 On-screen fitting on top of these caps is `ellipsize()` (binary-search,
 called only inside `begin()/end()`, results cached per row **while the row
