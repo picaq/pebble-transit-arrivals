@@ -83,6 +83,7 @@ white text.
 | `ARRIVAL_TEXT_X` | derived | `ARRIVAL_MIN_EDGE + 9` — one fixed column for every route number and destination (no per-row pushing; 9 not 10 is user-tuned) |
 | `NOW_X` / `NOW_NO_X` / `NOW_W_X` / `NOW_SLIVER_X` | derived | The “Now” label’s draw positions, all module constants and all hardware-measured/user-tuned 2026-07-12: right-aligned to `ARRIVAL_MIN_EDGE` then +2 px (`fontNarrow`’s +1 plus one more); drawn as a split “No”+“w” with “No” kerned +1 px toward the “w” (tightens the o–w gap); a 1×14 px sliver at `NOW_X+41`, `y+3` completes Leco-20’s lowercase-w final stroke (the glyph bitmap is one column short — 2 px wide vs 3 for every other stroke; uppercase “NOW” was rejected: the “W” has angled strokes). Do not replace with a single `drawText("Now")` |
 | `ARRIVAL_TEXT_W` | derived | Remaining width for line/destination text |
+| `NARROW_Y_SHIFT` | `3` px | Vertical drop applied to every `fontNarrow` draw in the arrivals row (“Now” and any 3-digit/100+ minute wait) so its baseline lines up with the route number/code (`fontLine`) beside it — `fontNarrow` (Leco-Bold 20) sits shorter than `fontLine`/`fontBig` (24/26) at the same `y` (user-tuned, 2026-07-12) |
 
 Everything derives from `screen.width`/`screen.height` — keep it that way
 (no absolute pixel positions; CLAUDE.md §12 item 7). Footer hint draws at

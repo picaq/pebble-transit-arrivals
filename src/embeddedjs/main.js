@@ -131,6 +131,11 @@ const NOW_X = ARRIVAL_MIN_EDGE - render.getTextWidth("Now", fontNarrow) + 2;
 const NOW_NO_X = NOW_X + 1;
 const NOW_W_X = NOW_X + render.getTextWidth("No", fontNarrow);
 const NOW_SLIVER_X = NOW_X + 41;
+// fontNarrow (Leco-Bold 20) sits shorter than fontBig/fontLine (26/24) when
+// drawn from the same y — its glyphs need to drop 3 px to line up with the
+// route number/code baseline (user-tuned, 2026-07-12). Applies to "Now" and
+// any 3-digit (>99) wait, the only two cases that use fontNarrow here.
+const NARROW_Y_SHIFT = 3;
 const ARRIVAL_TEXT_W = render.width - ARRIVAL_TEXT_X - 4;
 // Header title budget. The title is centered, so this is what decides when a
 // stop name ellipsizes: 6 px of margin per side (same as the row margin), plus
@@ -371,11 +376,12 @@ function draw() {
         if (a.min <= 0) {
           // Kerned split draw + stroke-completing sliver; see the NOW_*
           // constants. Allocation-free: fixed literals and constants.
-          render.drawText("No", fontNarrow, BLACK, NOW_NO_X, y);
-          render.drawText("w", fontNarrow, BLACK, NOW_W_X, y);
-          render.fillRectangle(BLACK, NOW_SLIVER_X, y + 3, 1, 14);
+          render.drawText("No", fontNarrow, BLACK, NOW_NO_X, y + NARROW_Y_SHIFT);
+          render.drawText("w", fontNarrow, BLACK, NOW_W_X, y + NARROW_Y_SHIFT);
+          render.fillRectangle(BLACK, NOW_SLIVER_X, y + NARROW_Y_SHIFT + 3, 1, 14);
         } else {
-          render.drawText(a.minStr, a.minFont, BLACK, a.minX, y);
+          render.drawText(a.minStr, a.minFont, BLACK,
+                          a.minX, a.minFont === fontNarrow ? y + NARROW_Y_SHIFT : y);
         }
         render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
         render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
