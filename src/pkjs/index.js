@@ -63,7 +63,7 @@ var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
   agencies: ["SF", "BA", "AC", "GG", "SM"],
   radiusM: 500,
-  railRadiusX: 1, // BART/Caltrain favorites hide line = hideFavKm × this (1 = off)
+  railRadiusX: 1, // BART/Caltrain reach ×this and rank ÷this (1 = off); see transit511 railScale
   maxStops: 8,
   hideFavKm: 19 // favorites farther than this are left out of the rows response (~12 mi)
 };
@@ -159,15 +159,23 @@ var ROWS_CACHE_KEY = "rows.v1";
 // them (there is none anymore).
 var ROWS_FRESH_MS = 3 * 60 * 1000; // 3 min
 
-// "Load more stops" pagination (buildMoreRows): a wide search radius so
-// farther stops become reachable, and how many farther stops to return per
-// page. The watch caps its total list length, so this only needs to feed
-// the next screenful.
+// "Load more stops" pagination (buildMoreRows). MORE_RADIUS_M is the FIRST
+// page's search radius, not the only one: handleRequest doubles it per page
+// (5 km, 10, 20, …) up to MORE_RADIUS_MAX_M, so Down keeps finding farther
+// stops instead of hitting a fixed distance wall. It used to be a flat
+// 5 km — once you'd seen every stop inside it, every further Down returned
+// an empty page and the watch latched "no more stops" permanently.
+// Widening is free: agency stop lists are already cached on the phone, and
+// the radius is just a filter over them (no extra 511 calls).
+// MORE_RADIUS_MAX_M spans the whole 511 service area — past it there is
+// genuinely nothing left to find, and an empty page is the honest answer.
 var MORE_RADIUS_M = 5000;
+var MORE_RADIUS_MAX_M = 200000; // 200 km — beyond the Bay Area's far edge
 var MORE_PAGE = 8;
-// Page-0 list shape. The watch renders at most 14 rows (MAX_LIST_ROWS,
-// main.js); the ROWS_BUDGET below fits all 14, so FAV_ROWS_MAX is now a
-// pure anti-monopoly cap (favorites can't push every nearby stop off the
+// Page-0 list shape: how many rows the opening screen arrives with. The watch
+// grows past this on Down ("load more"), retaining up to LIST_RETAIN_MAX=24
+// rows (main.js); the ROWS_BUDGET below fits all 14 of page 0, so FAV_ROWS_MAX
+// is a pure anti-monopoly cap (favorites can't push every nearby stop off the
 // list), sized so the whole favorites roster shows when you're near it.
 // Under the old 880 B budget it was 6: 13 visible favorites once filled
 // 1143 B by themselves — respond() (whose shed floor was "never shed
@@ -178,7 +186,11 @@ var MORE_PAGE = 8;
 // rest; capped-out favorites stay saved and reappear when you're nearer
 // them (or trim the list / lower hideFavKm on the settings page).
 var FAV_ROWS_MAX = 10;
-var WATCH_LIST_CAP = 14; // mirror of main.js MAX_LIST_ROWS
+// Page-0 list length. NOT a ceiling on the watch's list — the watch has no
+// row cap and appends farther stops on Down for as long as they exist. This
+// is just how many rows the opening screen arrives with (and what fits
+// ROWS_BUDGET in one reply); "load more" pages grow the list past it.
+var WATCH_LIST_CAP = 14;
 // Page-0 wire budget, enforced in respond(). 1600 B fits 14 compact rows
 // (~100 B each) plus wrapper. RELAXED 2026-07-12 from 880 B — a 32 KB-arena
 // trade (playbook §B, seventh/fifteenth recurrences) that the 72 KB heap
@@ -342,7 +354,9 @@ function respond(id, body, budget) {
   // cache-served replies) were appended — the overhead pushed an exactly-
   // budgeted list to 884 B on the wire and the watch crashed "memory full"
   // parsing it (playbook §B, seventh recurrence). The budget is ABSOLUTE:
-  // rows are farthest-first from the tail, non-favorites behind the
+  // rows are farthest-first from the tail (farthest by the effective/rank
+  // distance the list is ordered by — a scaled-in rail station is not shed
+  // ahead of a bus stop that ranks below it), non-favorites behind the
   // favorites block, so popping sheds all non-favorites first and then
   // favorites farthest-first as the last resort. Favorites used to be
   // exempt — 13 of them alone made a 1143 B payload that crashed the
@@ -442,13 +456,22 @@ function compressStopName(name) {
 
 // Build the display-ready rows list the watch renders verbatim: favorites
 // (nearest first, dimmed when serviceless) followed by nearby non-favorite
-// stops. Favorites farther than settings.hideFavKm — × railRadiusX for
-// BART/Caltrain (getFavoriteStatus flags them far:1) — are left out
-// entirely: no payload bytes, no arrival-check API calls (they reappear
-// when you get closer, and stay editable on the settings page). Subtitles carry the
-// stop's direction and serving lines from the cached agency-wide stop-info
-// map. All formatting lives here because watch code costs watch heap
-// (playbook §B).
+// stops.
+//
+// "Nearest" in both blocks means nearest by EFFECTIVE distance — real
+// distance ÷ railRadiusX for BART/Caltrain (transit511's railScale; the
+// provider hands back `eff` beside `dist` so rail knowledge stays behind
+// the provider boundary). A far station therefore interleaves with the bus
+// stops it's worth as much as instead of sitting at the bottom. Rows always
+// DISPLAY the real distance.
+//
+// Favorites farther than settings.hideFavKm — × railRadiusX for BART/
+// Caltrain, the same reach the nearby search now gives them
+// (getFavoriteStatus flags them far:1) — are left out entirely: no payload
+// bytes, no arrival-check API calls (they reappear when you get closer, and
+// stay editable on the settings page). Subtitles carry the stop's direction
+// and serving lines from the cached agency-wide stop-info map. All
+// formatting lives here because watch code costs watch heap (playbook §B).
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
@@ -486,7 +509,10 @@ function buildRows(req, lat, lon, settings) {
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(f.agency, f.code))),
           f: 1,
-          _d: dist === undefined ? 1e9 : dist
+          // Rank (not display) distance: getFavoriteStatus divides BART/
+          // Caltrain by railRadiusX, so a starred station sorts among the
+          // stops it's worth as much as. Unknown distance sorts last.
+          _d: st && st.eff >= 0 ? st.eff : 1e9
         };
         if (noArr) row.m = 1;
         favRows.push(row);
@@ -569,10 +595,12 @@ function buildRows(req, lat, lon, settings) {
 }
 
 // "Load more stops": return non-favorite nearby stops beyond the req.off
-// nearest (the ones the watch already shows), ranked by distance from a wide
-// search. No favorites block and no stale cache — the watch appends these to
-// its list. An empty rows array means there are no more stops (the watch then
-// stops asking). Mirrors buildRows' subtitle formatting.
+// nearest (the ones the watch already shows), ranked by effective distance
+// from a wide search — same ranking as page 0, so req.off lines up with what
+// the watch has and BART/Caltrain keep their railRadiusX reach out of the
+// wider MORE_RADIUS_M search. No favorites block and no stale cache — the
+// watch appends these to its list. An empty rows array means there are no
+// more stops (the watch then stops asking). Mirrors buildRows' subtitles.
 function buildMoreRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
@@ -639,7 +667,19 @@ function handleRequest(req) {
     if (req.off) {
       var wide = {};
       for (var wk in settings) wide[wk] = settings[wk];
-      wide.radiusM = Math.max(settings.radiusM, MORE_RADIUS_M);
+      // The search radius GROWS with how deep you've scrolled: every page
+      // doubles it (5 km, 10, 20, … up to MORE_RADIUS_MAX_M), so Down never
+      // runs into a fixed distance wall. A fixed 5 km used to be the wall —
+      // once you'd seen every stop inside it, every further Down returned an
+      // empty page and the watch latched "exhausted" for good. Widening is
+      // free: the agency stop lists are already cached on the phone and the
+      // radius is only a filter over them (no extra 511 calls).
+      var page = Math.floor(Number(req.off) / MORE_PAGE);
+      var grown = MORE_RADIUS_M * Math.pow(2, page);
+      wide.radiusM = Math.min(
+        Math.max(settings.radiusM, grown),
+        MORE_RADIUS_MAX_M
+      );
       // Reach past the default candidate ceiling far enough for one more page.
       wide.maxStops = Number(req.off) + MORE_PAGE + 2;
       wide.hardCeiling = Number(req.off) + MORE_PAGE + 2;

@@ -193,7 +193,7 @@ foreground on the phone, or `pebble install` fails with
 | Button | Stop list screen | Arrivals screen |
 |---|---|---|
 | Up | Move selection (refresh nearby stops if already at top) | Manual refresh |
-| Down | Move selection | Manual refresh |
+| Down | Move selection (load more stops if already at the bottom) | Manual refresh |
 | Select | Open stop’s arrivals | ★ favorite / unfavorite the stop |
 | Back | Exit app | Return to stop list |
 
@@ -210,13 +210,24 @@ A nearby favorite with nothing currently arriving draws dimmed (gray,
 subtitle “no arrivals”); service info comes from one cached agency-wide
 request, so a stop that just went quiet can stay undimmed briefly.
 
-Train stations are worth a longer reach than bus stops, so the settings
-page has a **BART/Caltrain favorites distance multiplier** slider (1–30×,
-default 1 = off): favorited BART and Caltrain stops stay on the watch list
-that many times farther away than the “Hide favorites beyond” distance
-(e.g. 19 km × 10 = 190 km) — handy for keeping your starred station on the
-list for the whole ride. Only favorites get the longer reach; the nearby
-search radius is unaffected.
+The stop-count setting is a **starting default, not a limit**: press Down at
+the bottom of the list to load more, farther stops, as many times as you like.
+Each press searches farther out than the last (5 km, 10, 20, …), so you can keep
+going until there is genuinely nothing left to find. The watch holds the most
+recent 24 rows in memory (favorites always stay pinned at the top), so stops you
+scrolled well past drop off the list as new ones load — press Up at the top to
+reload the list around where you are now.
+
+Train stations are worth going farther for than bus stops, so the settings
+page has a **BART/Caltrain distance multiplier** slider (1–30×, default
+1 = off). It scales BART and Caltrain two ways — for favorites and ordinary
+nearby stops alike. **Reach:** they are found this many times farther out
+(and favorites stay on the list this many times past the “Hide favorites
+beyond” distance, e.g. 19 km × 10 = 190 km, keeping your starred station on
+the list for the whole ride). **Rank:** they sort as if they were this many
+times closer, so at 5× a station 3 km away sits among the 600 m bus stops
+instead of at the bottom. The distance shown on each row is always the real
+one — the multiplier only decides ordering and reach.
 
 ## Troubleshooting
 

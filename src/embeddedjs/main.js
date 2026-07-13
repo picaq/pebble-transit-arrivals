@@ -83,8 +83,23 @@ const ROW_H = 40;
 const ARRIVAL_ROW_H = 44;
 const VISIBLE_ROWS = Math.floor((render.height - HEADER_H) / ROW_H);
 const VISIBLE_ARRIVALS = Math.floor((render.height - HEADER_H - 4) / ARRIVAL_ROW_H);
-const MAX_LIST_ROWS = 14; // list "load more" cap (favorites + nearby) — keeps
-                          // the on-watch list within the safe bound (playbook §B)
+// How many rows stay RETAINED. Loading is unlimited — Down at the bottom
+// appends for as long as the phone finds stops (its radius grows per page) —
+// but the list never holds more than this: once full, appending evicts the
+// oldest non-favorite rows off the TOP (favorites stay pinned). See
+// trimRetained(). So memory is bounded by this constant, not by how far the
+// user scrolls, and `state.moreOff` (not rows.length) drives pagination.
+//
+// This bound is NOT optional. It was MAX_LIST_ROWS = 14; removing it entirely
+// (2026-07-13, by request) crashed real hardware with "memory full" on a deep
+// scroll — the playbook §B thirteenth-recurrence geometry, where the
+// load-more page parses BESIDE the retained list, so free chunk shrinks with
+// every page loaded. That crash was observed at ~4 am, when few arrivals mean
+// short subtitles and small payloads: daytime rows cost more, so it will bite
+// sooner. 24 is a deliberately conservative step up from the known-safe 14 and
+// has NOT been measured — raise it only against the §F instrumentation
+// (chunk/slot headroom on a full list), never by guessing.
+const LIST_RETAIN_MAX = 24;
 const ARR_DEFAULT = 6;  // arrivals requested on open
 const ARR_MAX = 10;     // arrivals ceiling for "load more" (phone caps too)
 const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
@@ -174,6 +189,10 @@ const state = {
   refreshTimer: null,
   nearbyPending: false,       // in-flight guard — see fetchNearby()
   moreExhausted: false,       // list "load more" reached the end (no more stops)
+  moreOff: 0,                 // non-favorite stops LOADED so far — the pagination
+                              // cursor. Not rows.length: trimRetained() evicts
+                              // rows off the top, and pagination must not rewind
+                              // with them (that would re-fetch stops you passed)
   favPending: false,          // in-flight guard for the favorite toggle
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
   revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
@@ -210,6 +229,30 @@ function setRowsFromResponse(list) {
   }));
   if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
   state.moreExhausted = false; // a full (re)load resets "load more" pagination
+  // Re-seed the pagination cursor from what this list actually contains.
+  let n = 0;
+  for (let i = 0; i < state.rows.length; i++) if (!state.rows[i].fav) n++;
+  state.moreOff = n;
+  clampScroll();
+}
+
+// Keep the retained list at LIST_RETAIN_MAX by dropping the oldest NON-favorite
+// rows off the top — the nearest stops, which are the ones you scrolled away
+// from. Favorites are pinned at the head and never evicted. Selection and the
+// scroll window shift with the rows so the view doesn't jump. This is what lets
+// "load more" be unlimited without the retained list growing without bound
+// (playbook §B: the next page parses beside whatever is still retained).
+function trimRetained() {
+  const over = state.rows.length - LIST_RETAIN_MAX;
+  if (over <= 0) return;
+  let favCount = 0;
+  while (favCount < state.rows.length && state.rows[favCount].fav) favCount++;
+  // Never evict favorites, and always leave at least one nearby row.
+  const drop = Math.min(over, state.rows.length - favCount - 1);
+  if (drop <= 0) return;
+  state.rows.splice(favCount, drop);
+  state.sel = Math.max(0, state.sel - drop);
+  state.top = Math.max(0, state.top - drop);
   clampScroll();
 }
 
@@ -559,27 +602,28 @@ function scheduleRevalidate() {
 }
 
 // "Load more stops": append the next page of farther non-favorite stops. The
-// phone paginates from the offset (how many non-favorites we already show).
-// Bounded by MAX_LIST_ROWS and stopped once the phone returns none, so the
-// on-watch list can't grow without limit (playbook §B). Reuses the nearby
-// in-flight guard so it can't stack with a refresh.
+// phone paginates from state.moreOff and widens its search radius each page,
+// so Down at the bottom always has somewhere farther to look. Loading is
+// UNLIMITED; retention is not — trimRetained() evicts off the top to hold the
+// list at LIST_RETAIN_MAX. The only stop condition is the phone returning an
+// empty page, which now means "nothing left within 200 km", not "past the
+// fixed 5 km radius". Reuses the nearby in-flight guard so it can't stack
+// with a refresh.
 function fetchMore() {
   if (state.nearbyPending || state.moreExhausted) return;
-  if (state.rows.length >= MAX_LIST_ROWS) return;
-  let off = 0;
-  for (let i = 0; i < state.rows.length; i++) if (!state.rows[i].fav) off++;
   state.nearbyPending = true;
-  protocol.moreStops(off)
+  protocol.moreStops(state.moreOff)
     .then(resp => {
       state.nearbyPending = false;
       const more = resp.rows || [];
       if (!more.length) { state.moreExhausted = true; return; }
       for (const r of more) {
-        if (state.rows.length >= MAX_LIST_ROWS) break;
         state.rows.push({
           agency: r.a, code: r.c, name: r.n, sub: r.s, fav: false, dim: !!r.m
         });
       }
+      state.moreOff += more.length; // cursor advances even when rows are evicted
+      trimRetained();
       draw();
     })
     .catch(err => {

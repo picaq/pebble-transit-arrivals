@@ -177,12 +177,23 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // list and the AppMessage payload bounded even in the densest area.
 var HARD_STOP_CEILING = 14;
 
-// Rail agencies whose FAVORITES stay on the list farther out: their hide
-// line is maxCheckM × settings.railRadiusX in getFavoriteStatus (stations
-// are sparse and a train is worth a longer trip). Nearby search is not
-// affected — only starred stops earn the longer reach. BA = BART,
-// CT = Caltrain.
+// Rail agencies that reach farther up the list: BART and Caltrain stations
+// are sparse and a train is worth walking farther for, so settings.railRadiusX
+// scales them two ways — their eligibility radius (the nearby search radius,
+// and the favorites hide line in getFavoriteStatus) is MULTIPLIED by it, and
+// the distance they are RANKED by is divided by it. At 5× a station 3 km out
+// sorts among the 600 m bus stops. Only reach and rank scale: the `dist` field
+// every caller displays stays the true distance. Rail knowledge lives here and
+// nowhere else — callers just sort by `eff` (see findNearbyStops).
+// BA = BART, CT = Caltrain.
 var RAIL_AGENCIES = { BA: 1, CT: 1 };
+
+// Reach/rank multiplier for an agency; 1 for ordinary stops (no scaling).
+function railScale(agency, settings) {
+  if (!RAIL_AGENCIES[agency]) return 1;
+  var x = Number(settings.railRadiusX) || 1;
+  return x > 1 ? x : 1;
+}
 
 /**
  * settings.maxStops is a typical/floor count, not a hard cutoff: once that
@@ -191,6 +202,10 @@ var RAIL_AGENCIES = { BA: 1, CT: 1 };
  * with many lines), so we don't lop off part of a cluster at an arbitrary
  * index. A widening gap between consecutive stops marks the cluster's edge.
  * Bounded by HARD_STOP_CEILING either way.
+ *
+ * Gaps are measured in EFFECTIVE distance (results are ranked by it), so a
+ * scaled-in rail station reads as part of whatever cluster it lands in
+ * rather than as an artificial cliff.
  */
 function selectNearbyStops(results, maxStops, ceiling) {
   ceiling = ceiling || HARD_STOP_CEILING;
@@ -198,8 +213,8 @@ function selectNearbyStops(results, maxStops, ceiling) {
   if (results.length <= floor) return results.slice(0, ceiling);
   var count = floor;
   while (count < ceiling && count < results.length) {
-    var cur = results[count - 1].dist;
-    var next = results[count].dist;
+    var cur = results[count - 1].eff;
+    var next = results[count].eff;
     if (next > cur * 1.4 + 50) break; // gap: edge of the cluster
     count++;
   }
@@ -208,8 +223,13 @@ function selectNearbyStops(results, maxStops, ceiling) {
 
 /**
  * Find stops near (lat, lon) across all enabled agencies.
- * settings: { apiKey, agencies: ["SF", ...], radiusM, maxStops }
- * cb(err, stops) where stops = [{ agency, code, name, dist }] sorted by dist.
+ * settings: { apiKey, agencies: ["SF", ...], radiusM, maxStops, railRadiusX }
+ * cb(err, stops) where stops = [{ agency, code, name, dist, eff }] sorted by
+ * `eff`, the effective (rank) distance: `dist` divided by the agency's
+ * railScale, so BART/Caltrain stations interleave with the bus stops they
+ * are worth as much as. `dist` is the real distance — display that.
+ * BART/Caltrain are also searched out to radiusM × railRadiusX, so the far
+ * station is in the candidate set in the first place.
  *
  * Agencies are fetched sequentially so a cold cache doesn't burst the rate
  * limit; warm caches make this loop instant and network-free.
@@ -222,7 +242,8 @@ function findNearbyStops(lat, lon, settings, cb) {
   (function next() {
     if (!agencies.length) {
       if (!results.length && errors.length) return cb(new Error(errors[0]));
-      results.sort(function (a, b) { return a.dist - b.dist; });
+      // Rank by effective distance: rail scaled in, everything else as-is.
+      results.sort(function (a, b) { return a.eff - b.eff; });
       // hardCeiling override lets "load more" pagination reach past the
       // default 14-candidate ceiling (index.js buildMoreRows).
       var selected = selectNearbyStops(results, settings.maxStops, settings.hardCeiling);
@@ -237,16 +258,21 @@ function findNearbyStops(lat, lon, settings, cb) {
         errors.push(agency + ": " + err.message);
         return next();
       }
+      // Rail reaches railRadiusX times farther and ranks railRadiusX times
+      // nearer; ordinary agencies get mult = 1 and behave exactly as before.
+      var mult = railScale(agency, settings);
+      var radius = settings.radiusM * mult;
       for (var i = 0; i < stops.length; i++) {
         var s = stops[i];
         var d = haversineMeters(lat, lon, s[2], s[3]);
-        if (d <= settings.radiusM) {
+        if (d <= radius) {
           results.push({
             agency: agency,
             code: s[0],
             // Truncate: watch AppMessage payloads must stay small.
             name: s[1].slice(0, 28),
-            dist: Math.round(d)
+            dist: Math.round(d),
+            eff: Math.round(d / mult)
           });
         }
       }
@@ -325,21 +351,17 @@ function getStopInfo(agency, apiKey, cb) {
  * favs: [{ agency, code, name }] (≤ 10)
  * maxCheckM: the base hide line — favorites farther than it come back with
  * far:1 (the caller drops those from the list) and skip the arrival check.
- * RAIL_AGENCIES favorites use maxCheckM × settings.railRadiusX instead:
- * only starred stations earn the longer reach, so rail knowledge stays
- * inside this provider.
- * cb(null, [{ agency, code, dist, name?, far?, hasArr? }]) — dist in
+ * RAIL_AGENCIES favorites use maxCheckM × settings.railRadiusX instead
+ * (railScale), the same reach the nearby search gives them.
+ * cb(null, [{ agency, code, dist, eff, name?, far?, hasArr? }]) — dist in
  * meters, -1 when the stop can't be found (never far:1 — an unresolved
- * favorite still shows, with its saved name); name comes from the cached
- * stop list (absent on a cache/API miss); hasArr only present when it was
- * actually checked.
+ * favorite still shows, with its saved name); eff is the rank distance
+ * (dist ÷ railScale, -1 alongside an unknown dist) that the caller orders
+ * the favorites block by; name comes from the cached stop list (absent on a
+ * cache/API miss); hasArr only present when it was actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
  */
 function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
-  var railX = Number(settings.railRadiusX) || 1;
-  function hideLineM(agency) {
-    return RAIL_AGENCIES[agency] ? maxCheckM * railX : maxCheckM;
-  }
   // Group by agency so each stop list is loaded (and its cache JSON-parsed)
   // once, not per favorite.
   var byAgency = {};
@@ -354,6 +376,7 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
     var agency = agencies.shift();
     fetchStops(agency, settings.apiKey, function (err, stops) {
       var codes = byAgency[agency];
+      var mult = railScale(agency, settings);
       for (var i = 0; i < codes.length; i++) {
         var dist = -1;
         var name;
@@ -366,8 +389,14 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
             }
           }
         }
-        var entry = { agency: agency, code: codes[i], dist: dist, name: name };
-        if (dist >= 0 && dist > hideLineM(agency)) entry.far = 1;
+        var entry = {
+          agency: agency,
+          code: codes[i],
+          dist: dist,
+          eff: dist >= 0 ? Math.round(dist / mult) : -1,
+          name: name
+        };
+        if (dist >= 0 && dist > maxCheckM * mult) entry.far = 1;
         entries.push(entry);
       }
       nextAgency();

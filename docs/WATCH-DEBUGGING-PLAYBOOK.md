@@ -385,6 +385,30 @@ established on real hardware in this repo:
   `scheduleRevalidate()` machinery is now dead code kept only because
   removing watch code needs a boot-verified install — delete it for
   free bytecode next time embedded code changes anyway.
+- **Seventeenth recurrence (2026-07-13): removing the list row cap crashed
+  hardware — the retained list IS the memory bound.** `MAX_LIST_ROWS` = 14 was
+  deleted by explicit user request (“pressing down at the end should load more
+  no matter what”), leaving the retained row list unbounded while “load more”
+  pages kept appending. Real hardware faulted “memory full” on a deep scroll.
+  This is the thirteenth recurrence’s geometry restated: the load-more page is
+  the one response that parses BESIDE the retained list, so every page loaded
+  shrinks the free chunk the NEXT page needs — an unbounded list is a slow-motion
+  version of that fault, guaranteed to arrive at some depth. Two reporting
+  details worth keeping: (1) it “took a long time”, which is what an
+  incrementally-tightening headroom looks like — not evidence of safety; (2) it was
+  observed at ~4 am, when few arrivals mean short subtitles and small payloads,
+  so it is the BEST case — daytime rows cost more heap each and it bites sooner.
+  Fix (watch): `LIST_RETAIN_MAX` = 24 with `trimRetained()` in `main.js` — loading
+  stays unlimited, retention does not. Appending past the cap evicts the oldest
+  NON-favorite rows off the top (favorites pinned at the head); selection and the
+  scroll window shift with them. Pagination is driven by `state.moreOff`, a
+  monotonic cursor, NOT `rows.length` — otherwise eviction would rewind the cursor
+  and re-fetch stops the user already passed. Lessons: (1) “unlimited scrolling”
+  and “bounded memory” are reconcilable, but only by separating what you LOAD
+  from what you RETAIN — a sliding window gives both; (2) when a user asks to remove
+  a memory bound, the answer is a window, not a deletion; (3) a crash that takes
+  a long time to arrive is still deterministic — “I scrolled a lot and it survived”
+  is not a measurement (§F is).
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in
