@@ -139,17 +139,25 @@ function saveSettings(settings) {
 
 /* ------------------------------------------------------------- rows cache */
 
-// Stale-while-revalidate: the last computed rows list is persisted so the
-// watch can render a list the instant it asks (even at cold app launch),
-// before any geolocation or network work runs. A non-fresh "nearby" request
-// is answered immediately from this cache with stale:1; the watch shows it,
-// then fires exactly one fresh:1 follow-up that does the real compute and
-// replaces the list. Only the normal page-0 list is cached — "load more"
-// pages (buildMoreRows) are not, so a launch never flashes a long list.
+// Cached-list boot: the last computed rows list is persisted so the watch
+// can render a list the instant it asks (even at cold app launch), before
+// any geolocation or network work runs. A non-fresh "nearby" request is
+// answered from this cache AS FINAL — no stale:1 flag, so the watch never
+// schedules its fresh:1 revalidation follow-up. That follow-up was a
+// second full rows parse ~11 s into boot, and it aborted "memory full"
+// deterministically once the boot allocations carved the whole arena
+// (playbook §B, sixteenth recurrence, captured 2026-07-12). Freshness now
+// comes from the short serve window below instead: a cache young enough to
+// serve is young enough to be true (you're still where you were), and
+// anything older takes the normal single-parse fresh path. Manual
+// pull-to-refresh still forces fresh:1. Only the normal page-0 list is
+// cached — "load more" pages (buildMoreRows) are not, so a launch never
+// flashes a long list.
 var ROWS_CACHE_KEY = "rows.v1";
-// Don't serve a stale list older than this — past it you may be somewhere
-// else entirely, so eat the compute rather than flash a wrong location.
-var ROWS_STALE_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+// Serve-as-final window. Past it, eat the geolocation + network wait
+// rather than show possibly-moved distances with no revalidation behind
+// them (there is none anymore).
+var ROWS_FRESH_MS = 3 * 60 * 1000; // 3 min
 
 // "Load more stops" pagination (buildMoreRows): a wide search radius so
 // farther stops become reachable, and how many farther stops to return per
@@ -180,7 +188,7 @@ var MORE_BUDGET = 400;
 function loadRowsCache() {
   try {
     var e = JSON.parse(localStorage.getItem(ROWS_CACHE_KEY) || "null");
-    if (!e || !e.rows || Date.now() - e.ts > ROWS_STALE_TTL_MS) return null;
+    if (!e || !e.rows || Date.now() - e.ts > ROWS_FRESH_MS) return null;
     return e.rows;
   } catch (x) {
     return null;
@@ -637,14 +645,14 @@ function handleRequest(req) {
       );
       return;
     }
-    // Instant stale reply: answer a plain (non-fresh) request from the
-    // persisted list with no geolocation or network work, then let the watch
-    // revalidate with a fresh:1 follow-up (see rows cache above).
+    // Instant cached reply, served as FINAL — no stale:1, so the watch
+    // never schedules the revalidation follow-up that crashed it (see the
+    // rows cache comment above).
     if (!req.fresh) {
       var cachedRows = loadRowsCache();
       if (cachedRows) {
-        console.log("req nearby: served stale (" + cachedRows.length + " rows)");
-        return respond(req.id, { type: "rows", rows: cachedRows, stale: 1 });
+        console.log("req nearby: served cached (" + cachedRows.length + " rows)");
+        return respond(req.id, { type: "rows", rows: cachedRows });
       }
     }
     if (req.mig) importLegacyFavs(req.mig);

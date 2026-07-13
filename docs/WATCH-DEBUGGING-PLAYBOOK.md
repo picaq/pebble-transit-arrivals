@@ -356,6 +356,33 @@ established on real hardware in this repo:
   (missing rows) and a crash can be the same defect — the shed loop was
   silently eating the rows *and* overrunning the budget from the same
   line.
+- **Sixteenth recurrence (2026-07-12, captured 2/2, zero button presses):
+  the deferred stale-list revalidation itself became the crash — the
+  eleventh fix's 5 s delay stopped being enough once the arena carving
+  tightened.** Boot: stale rows (846 B) parse fine (pools still growing)
+  → by ~11 s the pools had carved the whole arena (chunk 6,072/6,180 +
+  slot 19,920/20,464 + stack 6,144 ≈ 32.8 KB) → the fresh:1 revalidation
+  response (836 B, 14 rows) needs ~2× wire of chunk, the pool can't grow,
+  fxAbort. Deterministic on every launch that sat on the list ≥ 11 s. The
+  user reported it as an *arrivals* bug ("non-favorite stops always hang
+  then memory full"): reaching a non-favorite means scrolling past the
+  5 s mark, so the revalidation fires, the arrivals request queues behind
+  it on the serialized wire (the "hang"), and the revalidation parse
+  aborts. Favorites "sometimes worked" = selected within ~5 s, which
+  defers the revalidation (off-list rule) — the eleventh fix's own
+  machinery decided which taps survived. Fix (phone-only): the cached
+  list is served **as final** — no `stale:1`, so the watch never
+  schedules revalidation — and only when ≤ 3 min old (`ROWS_FRESH_MS`);
+  older caches are a miss and boot takes the normal single-parse fresh
+  path. One rows parse per boot, ever. Lessons: (1) a *deferred* risky
+  operation is still the same operation — delay changes when it explodes,
+  not whether; at a saturated arena the only safe count of optional
+  full-list parses is zero; (2) crashes that "depend on how long you
+  waited" are a scheduled-work signature — check timers/deferred hooks
+  before blaming the action the user took; (3) the watch-side
+  `scheduleRevalidate()` machinery is now dead code kept only because
+  removing watch code needs a boot-verified install — delete it for
+  free bytecode next time embedded code changes anyway.
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
   firmware source (`src/fw/applib/moddable/moddable.c` in

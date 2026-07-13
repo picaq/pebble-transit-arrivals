@@ -174,7 +174,7 @@ than concurrent memory.
 | Manual-refresh cooldown (Up at top, both screens) | 3 s | `REFRESH_COOLDOWN_MS`, `main.js` — see §6 |
 | Phone-side full-arrivals cache (absorbs manual + auto refresh) | 45 s | `ARRIVALS_TTL_MS`, `transit511.js:367` |
 | Agency-wide stop-info cache (lines/directions per stop + favorite has-arrivals) | 10 min | `STOP_INFO_TTL_MS`, `transit511.js:244` — one StopMonitoring call per agency, no stopcode. These per-agency calls are fired **concurrently** (not serially) in `buildRows`/`getFavoriteStatus` — the sequential version was the main field latency |
-| Persisted rows list (stale-while-revalidate) | 6 h; revalidation deferred 5 s | `ROWS_STALE_TTL_MS`, `index.js`; `REVALIDATE_DELAY_MS` + `scheduleRevalidate()`, `main.js` — a plain `nearby` request is answered instantly from this cache (`stale:1`, no geolocation/network); the watch shows it, then revalidates **5 s later through `refreshList()`** (list stays interactive with the "…" indicator; rows released at response arrival via `protocol.onBeforeParse`), waiting/retrying until the list screen is idle. Firing the fresh follow-up immediately crashed the watch when the user navigated fast at boot (playbook §B, eleventh recurrence). Serves launch/settings-changed only: pull-to-refresh sends `fresh:1` directly (seventh recurrence). Widened ("load more") lists are not cached |
+| Persisted rows list (serve-as-final) | 3 min (`ROWS_FRESH_MS`) | `index.js` — a plain `nearby` request is answered instantly from this cache **as final: no `stale:1`, no revalidation** (the watch's `scheduleRevalidate()` machinery remains in `main.js` but never triggers). The deferred-revalidation design (stale:1 → fresh follow-up 5 s later, eleventh recurrence) died 2026-07-12: its second full rows parse ~11 s into boot aborted "memory full" deterministically at the fully-carved arena (playbook §B, sixteenth recurrence). Past 3 min the cache is treated as a miss and the launch takes the normal single-parse fresh path (a "Locating…" wait instead of an instant list). Freshness beyond that is manual: pull-to-refresh sends `fresh:1` directly (seventh recurrence). Widened ("load more") lists are not cached |
 | Stop-list cache | 7 days | `STOP_CACHE_TTL_MS`, `transit511.js:38` |
 | Watch request timeout | 15 s | `REQUEST_TIMEOUT_MS`, `protocol.js:48` |
 | Phone HTTP timeout | 20 s | `getJSON()`, `transit511.js:45` |
@@ -279,11 +279,12 @@ ping and re-runs the nearby search. To add one: `config.js` field →
   (or "Waiting for phone…" if pebblekit isn't connected) — the watch keeps
   no persistent data, so there is nothing to render until the phone
   answers.
-- The first reply is usually the phone's instant stale list; the fresh
-  revalidation runs ~5 s later via `refreshList()` (see §7) — the list
-  stays interactive with the "…" indicator, but may visibly re-sort/reset
-  to the top when the fresh reply lands; selecting a stop before it fires
-  simply postpones it (it waits for the list screen to be idle).
+- If the phone's rows cache is under 3 min old (`ROWS_FRESH_MS`), the
+  first reply is that cached list, served as final — no revalidation
+  follows (see §7's persisted-rows entry; the old 5 s deferred
+  revalidation crashed the watch, playbook §B sixteenth recurrence).
+  Older cache = the launch waits through the normal locate + fetch
+  ("Connecting…" until the single fresh reply lands).
 - The **phone initiates** the first fetch via a `SettingsChanged` ping
   from its `ready` handler — the watch never requests at boot (race, see
   CLAUDE.md §6). Recovery if the ping is lost: Up at the top of the list.
