@@ -10,7 +10,7 @@ https://511.org/open-data/transit (spec PDF linked from that page).
   https://511.org/open-data/token
 - **Rate limit: 60 requests / 3600 s per key** (default; can request more).
 - Always pass `format=json`. Responses are gzip-compressed and **begin with
-  a UTF-8 BOM (`\uFEFF`)** — strip it before `JSON.parse`.
+  a UTF-8 BOM (`\uFEFF`)** — strip it before `JSON.parse`.
 
 ## Operator codes used by this app
 
@@ -21,9 +21,9 @@ https://511.org/open-data/transit (spec PDF linked from that page).
 | AC | AC Transit |
 | GG | Golden Gate Transit (GF = Golden Gate Ferry) |
 | SM | SamTrans |
-| CT | Caltrain (example "extra" code) |
+| CT | Caltrain (example “extra” code) |
 
-Authoritative, current list (codes occasionally change — verify before
+Authoritative, current list (codes occasionally change — verify before
 hardcoding new ones):
 
 ```
@@ -51,27 +51,27 @@ GET /transit/StopMonitoring?api_key=KEY&agency=SF&stopcode=15553&format=json
 
 Predictions live at
 `ServiceDelivery.StopMonitoringDelivery.MonitoredStopVisit[]`
-(`StopMonitoringDelivery` is sometimes an array — handle both). Each visit's
+(`StopMonitoringDelivery` is sometimes an array — handle both). Each visit’s
 `MonitoredVehicleJourney` has `LineRef`, `DestinationName` (sometimes an
 array), and `MonitoredCall` with `ExpectedArrivalTime` /
 `ExpectedDepartureTime` / `Aimed*` ISO timestamps. Cancelled-trip info is
 also included in this feed.
 
 `LineRef` values are agency-specific: Muni/AC use route numbers/letters
-("38R", "J"), while **BART names its lines by color** — "Green", "Yellow",
-"Red", "Orange", "Blue", plus "Beige" for the Coliseum–OAK shuttle.
+(“38R”, “J”), while **BART names its lines by color** — “Green”, “Yellow”,
+“Red”, “Orange”, “Blue”, plus “Beige” for the Coliseum–OAK shuttle.
 `transit511.js` compresses the five color-named BART lines to their initial
 letter in list-subtitle tokens and attaches a display-color code for the
 watch; arrivals keep the full name (`bartLineLetter()`).
 
 ## Other available endpoints (not used yet, useful for features)
 
-- `/transit/VehicleMonitoring?agency=` — live vehicle positions.
-- `/transit/lines?operator_id=` — routes per agency.
-- `/transit/patterns?operator_id=&line_id=` — ordered stop lists per route.
-- `/transit/stopplaces?operator_id=` — richer stop metadata.
-- `/transit/servicealerts` / GTFS-RT feeds — alerts, trip updates (protobuf).
-- `operator_id=RG` — consolidated regional GTFS feed.
+- `/transit/VehicleMonitoring?agency=` — live vehicle positions.
+- `/transit/lines?operator_id=` — routes per agency.
+- `/transit/patterns?operator_id=&line_id=` — ordered stop lists per route.
+- `/transit/stopplaces?operator_id=` — richer stop metadata.
+- `/transit/servicealerts` / GTFS-RT feeds — alerts, trip updates (protobuf).
+- `operator_id=RG` — consolidated regional GTFS feed.
 
 ## Attribution
 

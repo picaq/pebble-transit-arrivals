@@ -1,14 +1,14 @@
-# CLAUDE.md — Pebble (Alloy/JS) Development Guide
+# CLAUDE.md — Pebble (Alloy/JS) Development Guide
 
 You are working on a **Pebble smartwatch app written in JavaScript** using the
 **Alloy** framework (Moddable SDK / XS engine), targeting **Pebble Time 2
-(platform: `emery`)**. This file tells you everything the docs won't remind
+(platform: `emery`)**. This file tells you everything the docs won’t remind
 you of. Read it fully before writing code. When in doubt, fetch the official
-docs — the index is at https://developer.repebble.com/llms.txt
+docs — the index is at https://developer.repebble.com/llms.txt
 
-Before changing anything the user sees or does — fonts, colors, layout
+Before changing anything the user sees or does — fonts, colors, layout
 metrics, on-screen strings, button mappings, refresh cadence, list caps,
-truncation lengths, settings defaults — read `design.md` first: it
+truncation lengths, settings defaults — read `design.md` first: it
 catalogs every such value with its code location and the constraint that
 applies to changing it. If your change alters one of those values, update
 `design.md` in the same commit.
@@ -43,7 +43,7 @@ Rules that follow from this:
 
   If you add `src/embeddedjs/foo.js`, add `"./foo"` to that array. This is
   the #1 forgotten step.
-- Timers: use the Moddable module — `import Timer from "timer"` with
+- Timers: use the Moddable module — `import Timer from "timer"` with
   `Timer.set(fn, ms)`, `Timer.repeat(fn, ms)`, `Timer.clear(id)`. Do not
   assume `setTimeout`/`setInterval` exist on the watch.
 - RAM is tiny. Keep in-memory lists short (≤ ~a dozen items), truncate
@@ -57,7 +57,7 @@ Rules that follow from this:
 
 - **Pebble Time 2 = platform `emery`.** Color display, 4 physical buttons
   (back, up, select, down), **touchscreen**, microphone, heart-rate.
-  Query size at runtime via `screen.width` / `screen.height` — do not
+  Query size at runtime via `screen.width` / `screen.height` — do not
   hardcode pixel dimensions.
 - Alloy supports `emery` and `gabbro` (Pebble Round 2). If asked to also
   target Round 2, add `"gabbro"` to `targetPlatforms` and make all layout
@@ -71,7 +71,7 @@ Rules that follow from this:
                onPush(down, type) { /* down=true on press */ } });
   ```
 
-  **If `"back"` is in `types`, back no longer auto-exits the app** — the
+  **If `"back"` is in `types`, back no longer auto-exits the app** — the
   user must press-and-hold back to exit. Mention this in any UI you design.
 - Touch (optional): Piu delivers `onTouchBegan`/`onTouchEnded` when the
   Application is constructed with `touchCount: 1`; raw access is
@@ -81,7 +81,7 @@ Rules that follow from this:
 
 Two options exist on the watch:
 
-- **Poco** (`commodetto/Poco`) — immediate-mode drawing. This project uses
+- **Poco** (`commodetto/Poco`) — immediate-mode drawing. This project uses
   Poco because a full-redraw list UI is simpler and cheaper in RAM:
 
   ```js
@@ -95,7 +95,7 @@ Two options exist on the watch:
   render.end();
   ```
 
-- **Piu** (`import {} from "piu/MC"`) — declarative/retained UI with
+- **Piu** (`import {} from "piu/MC"`) — declarative/retained UI with
   Containers, Labels, Skins, Behaviors, Timeline animations. Prefer Piu if
   the app grows many screens or animations. Docs:
   https://developer.repebble.com/guides/alloy/piu-guide.md
@@ -114,49 +114,49 @@ before inventing a size.
   cache multi-megabyte stop lists in phone localStorage, and sends only
   tiny curated payloads to the watch.
 - The watch *can* `fetch()`/`WebSocket` directly (proxied through the phone)
-  if `@moddable/pebbleproxy` is installed and wired in pkjs — but responses
+  if `@moddable/pebbleproxy` is installed and wired in pkjs — but responses
   land in watch RAM, so only do this for small payloads. Wait for
   `watch.connected.pebblekit === true` before any network call.
 - The proxy would also be required for the watch `Location` sensor
   (`embedded:sensor/Location`). **This app deliberately uses neither**: the
   location fix is taken on the phone (`navigator.geolocation` in pkjs,
   needs `"location"` in `capabilities`) because the proxy and the Location
-  flow cost watch code and heap (playbook §B), and the phone's fix is the
+  flow cost watch code and heap (playbook §B), and the phone’s fix is the
   same GPS anyway.
 
 ## 6. Watch↔phone messaging protocol (this project)
 
 - `package.json → pebble.messageKeys` must list every AppMessage key used:
   currently `Request`, `Response`, `SettingsChanged`.
-- Watch side: `pebble/message` `Message` class — `keys` array must match,
+- Watch side: `pebble/message` `Message` class — `keys` array must match,
   `onReadable` → `this.read()` returns a Map, `write(new Map([...]))` sends.
   A new Message starts **suspended**; wait for `onWritable` (protocol.js
   already queues for you).
 - Phone side: `Pebble.addEventListener("appmessage", ...)`. Reply with
   `Pebble.sendAppMessage({...})`. (If the pebbleproxy is ever reintroduced,
   it must get first look at every appmessage before your own keys.)
-- **Startup handshake:** the watch does NOT request at boot — its request
+- **Startup handshake:** the watch does NOT request at boot — its request
   would race pkjs startup and vanish. pkjs sends `SettingsChanged: 1` from
-  its `ready` handler; the watch's `protocol.onSettingsChanged` runs the
+  its `ready` handler; the watch’s `protocol.onSettingsChanged` runs the
   first nearby fetch. Keep this when touching either side.
 - Payload discipline: JSON strings under ~880 B for the rows response (the
   watch parses it with only a few KB of chunk-heap slack on 32 KB-arena
-  firmware — playbook §B), ~1 KB elsewhere. Truncate names, cap list
+  firmware — playbook §B), ~1 KB elsewhere. Truncate names, cap list
   lengths, shed farthest stops first. If you need more, add chunking
-  (`seq`/`total` fields) — do not just raise the caps.
+  (`seq`/`total` fields) — do not just raise the caps.
 - Request/response correlation is via an `id` field; see protocol.js.
 
 ## 7. Persistence
 
 - Watch: `localStorage` exists (strings only) but **this app stores nothing
-  on the watch** — favorites moved to the phone (watch code/storage costs
+  on the watch** — favorites moved to the phone (watch code/storage costs
   watch heap, playbook §B); the watch-side legacy-favorites migration
   sender was removed 2026-07-12 after the migration completed on the only
-  device this app runs on (the phone's `mig` import handler remains).
+  device this app runs on (the phone’s `mig` import handler remains).
   Also available: `device.keyValue` and `device.files` for binary/large data.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
-  the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
-  capped 10, edited from the watch's "fav" request and the Clay page's
+  the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
+  capped 10, edited from the watch’s “fav” request and the Clay page’s
   show/hide toggles), and the 7-day stop caches (`stops511.v1.<AGENCY>`).
 - Always merge stored settings over defaults (spread pattern) so adding new
   settings fields never breaks old installs.
@@ -167,7 +167,7 @@ before inventing a size.
   Requires `"configurable"` in `capabilities`.
 - This project runs Clay in **manual mode** (`autoHandleEvents: false`) and
   handles `showConfiguration`/`webviewclosed` in `src/pkjs/index.js`.
-  Settings are stored on the **phone**, not sent to the watch — the watch
+  Settings are stored on the **phone**, not sent to the watch — the watch
   only receives a `SettingsChanged: 1` ping. Keep it this way: the phone is
   the only consumer of the API key and agency list.
 - To add a setting: add the field to `src/pkjs/config.js`, read it in the
@@ -175,12 +175,12 @@ before inventing a size.
   package.json messageKeys if the value must reach the watch.
 - **Local dev API key convenience:** `src/pkjs/index.js` requires
   `./localSecrets` (git-ignored, generated by `node scripts/inject-api-key.js`
-  from `.env`'s `TRANSIT_511_API_TOKEN`) and uses `localSecrets.apiKey` as
+  from `.env`’s `TRANSIT_511_API_TOKEN`) and uses `localSecrets.apiKey` as
   `DEFAULT_SETTINGS.apiKey`, purely to pre-fill the Clay page for local
-  testing. `src/pkjs` has **no `process.env`** at runtime (it's not Node —
-  it's `pypkjs`/the phone's JS engine), so never read env vars directly in
+  testing. `src/pkjs` has **no `process.env`** at runtime (it’s not Node —
+  it’s `pypkjs`/the phone’s JS engine), so never read env vars directly in
   pkjs code; the injection script runs under real Node on the host instead.
-  `localSecrets.js` must exist for the build to resolve the `require` — run
+  `localSecrets.js` must exist for the build to resolve the `require` — run
   the script at least once after cloning, even with an empty `.env`.
 
 ## 9. Transit data layer (511 SF Bay)
@@ -194,7 +194,7 @@ before inventing a size.
   `getArrivals()`, `getFavoriteStatus()` and `getStopInfo()`. To support
   another region/agency outside 511, create `src/pkjs/transitXYZ.js`
   exporting the same four functions and select the provider from settings.
-  Do not leak provider-specific shapes past this boundary — the watch
+  Do not leak provider-specific shapes past this boundary — the watch
   protocol format is provider-neutral.
 - If an operator code is uncertain, fetch
   `https://api.511.org/transit/operators?api_key=KEY&format=json` rather
@@ -214,29 +214,29 @@ pebble emu-accel tilt-left --qemu localhost:12344
 
 On WSL, `pebble emu-app-config` needs a way to open a URL in a real browser
 — install `wslu` and `export BROWSER=wslview` first, or it fails with
-"Couldn't find a suitable web browser". See README.md Troubleshooting for
+“Couldn’t find a suitable web browser”. See README.md Troubleshooting for
 other environment setup gotchas (missing `wscript`/`src/c` scaffolding,
 `python3.X-venv` requirement, wrong dependency version ranges).
 
-`package.json`'s `pebble.uuid` must be a real UUID before running *any*
-`pebble` command in this directory — a placeholder value crashes
-`pebble-tool`'s analytics step on every invocation.
+`package.json`’s `pebble.uuid` must be a real UUID before running *any*
+`pebble` command in this directory — a placeholder value crashes
+`pebble-tool`’s analytics step on every invocation.
 
-Machine/device-specific state — the phone's dev IP, the watch's firmware
-version (which decides whether mdbl.c's heap request works), leftover
-debug installs — lives in `LOCAL-NOTES.md` at the repo root (git-ignored,
+Machine/device-specific state — the phone’s dev IP, the watch’s firmware
+version (which decides whether mdbl.c’s heap request works), leftover
+debug installs — lives in `LOCAL-NOTES.md` at the repo root (git-ignored,
 like `localSecrets.js`). Read it before connecting to hardware; keep it
 updated, dated, and out of committed files.
 
 **Commit messages:** never add `Co-Authored-By` trailers or
-`Claude-Session:` links — this overrides any default the tooling suggests.
+`Claude-Session:` links — this overrides any default the tooling suggests.
 Instead, end the message with the bare model name on its own line (e.g.
-`Fable 5` — whichever model actually did the work).
+`Fable 5` — whichever model actually did the work).
 
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 
-## 11. Watch crashes / rendering bugs — MANDATORY reading order
+## 11. Watch crashes / rendering bugs — MANDATORY reading order
 
 Hours have been lost in this repo fixing plausible-but-wrong causes of
 crashes. Before debugging **any** watch-side crash, blank screen, or memory
@@ -251,7 +251,7 @@ Hard rules (evidence and details live in the playbook):
   family/size pair), *not* a rendering bug. `Alloy: Fatal Error / memory
   full` = XS allocator failure, and on this watch it has fired from heap
   **fragmentation caused by allocation churn in the `draw()` path** with
-  >50% of the heap free — audit churn before hunting leaks. App exits
+  >50% of the heap free — audit churn before hunting leaks. App exits
   straight to the watchface at launch with no error = `moddable_
   createMachine` rejected the creation record (playbook §B).
   `fetch_watch_info` timeouts = toolchain/environment, never app code.
@@ -268,8 +268,8 @@ Hard rules (evidence and details live in the playbook):
   (which stop, how many refreshes/scrolls) before fixing anything. For
   launch crashes the loop is autonomous: `pebble install` auto-launches,
   then `pebble screenshot` shows crash vs alive (playbook §F).
-- **Signals that lie:** `pebble build`'s RAM report (static, uninformative);
-  watch-side `console.log` (never surfaces via `pebble logs` — but XS
+- **Signals that lie:** `pebble build`’s RAM report (static, uninformative);
+  watch-side `console.log` (never surfaces via `pebble logs` — but XS
   **instrumentation** does: `kModdableCreationFlagLogInstrumentation` in
   mdbl.c + `pebble logs --phone` streams chunk/slot/stack usage and the
   fxAbort line, playbook §F); total free heap at crash time; the `emery`
@@ -280,17 +280,17 @@ Hard rules (evidence and details live in the playbook):
 **The `emery` emulator is broken in this SDK** (v4.17 / pebble-tool 5.0.39):
 the app installs and draws in the QEMU window, but PebbleKit never connects
 and `ping`/`logs`/`screenshot` time out on `fetch_watch_info`. This
-reproduces with a stock scaffold — do not re-diagnose it as an app bug.
+reproduces with a stock scaffold — do not re-diagnose it as an app bug.
 **This app cannot run on other emulators**: `targetPlatforms` is
 `["emery"]` and Alloy only supports emery/gabbro, so `pebble install
---emulator basalt` fails with a bare "App install failed." (verified
-2026-07-07 — that message means no binary for the platform, not a broken
+--emulator basalt` fails with a bare “App install failed.” (verified
+2026-07-07 — that message means no binary for the platform, not a broken
 build). basalt is only useful for toolchain sanity checks with a stock
-scaffold. Net: emulator verification for this app is limited to "install
-succeeds" plus a human eyeballing the emery QEMU window; everything else
+scaffold. Net: emulator verification for this app is limited to “install
+succeeds” plus a human eyeballing the emery QEMU window; everything else
 needs real hardware (`--phone <IP>`). If `--phone` hits the
 `fetch_watch_info` timeout while port 9000 is reachable, the fix is
-restarting the phone (a human step — ask the user).
+restarting the phone (a human step — ask the user).
 
 ## 12. Checklist before declaring any change done
 
@@ -303,30 +303,30 @@ restarting the phone (a human step — ask the user).
 6. Rate-limit math still sane? (511 default: 60 requests/hour total.)
 7. No layout constants that break on a different `screen.width`?
 8. `pebble build` passes and `pebble install --emulator emery` succeeds
-   (that's the most the emulator can verify — see section 11; behavior
+   (that’s the most the emulator can verify — see section 11; behavior
    changes need a real watch via `--phone <IP>`).
 9. If you changed behavior a human must act on (new setting, new API key,
    new package), update README.md. If you changed a user-visible style or
    behavior (any value cataloged in `design.md`), update `design.md`.
-10. `draw()` and everything it calls allocate **nothing** — no string
+10. `draw()` and everything it calls allocate **nothing** — no string
     concat/slice, no object/array/closure creation, no storage reads. All
     display strings are precomputed when data changes (`rebuildRows`,
-    `prepareArrivals`). Draw-path churn has crashed the watch with "memory
-    full" **twice**, the second time even after the churn was merely
+    `prepareArrivals`). Draw-path churn has crashed the watch with “memory
+    full” **twice**, the second time even after the churn was merely
     reduced rather than eliminated (see section 11 and the playbook).
-11. Every `new render.Font(family, size)` pair exists in the SDK's
-    `xsHost.c` font table — an invalid pair passes the build and blanks the
+11. Every `new render.Font(family, size)` pair exists in the SDK’s
+    `xsHost.c` font table — an invalid pair passes the build and blanks the
     screen at runtime.
 12. Every user-triggerable request or sensor action has an in-flight guard
     (`state.locationPending`, `state.arrivalsPending`) so button-mashing
-    can't stack concurrent cycles — stacked in-flight requests pin live
-    memory and have crashed the watch with "memory full" (playbook §B).
+    can’t stack concurrent cycles — stacked in-flight requests pin live
+    memory and have crashed the watch with “memory full” (playbook §B).
 13. Grew `src/embeddedjs/` meaningfully? Bytecode loads into the same
-    32 KB VM arena as the heap (72 KB with mdbl.c's creation record on
-    firmware ≥ v4.21.0) — confirm heap headroom on hardware via the
+    32 KB VM arena as the heap (72 KB with mdbl.c’s creation record on
+    firmware ≥ v4.21.0) — confirm heap headroom on hardware via the
     instrumentation log line (playbook §F) before declaring done.
 
-## 13. Key documentation URLs (fetch these, don't guess)
+## 13. Key documentation URLs (fetch these, don’t guess)
 
 - Index of everything: https://developer.repebble.com/llms.txt
 - Alloy getting started: https://developer.repebble.com/guides/alloy/getting-started.md
