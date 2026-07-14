@@ -678,6 +678,36 @@ function serveArrivals(list) {
   return out;
 }
 
+// The arrivals-screen destination. 511 pads these with the same noise the stop
+// names carry, and a blunt slice then amputated the part that actually names
+// the place — "Berryessa / North San Jose" came through as "Berryessa / North
+// San Jo", and every Caltrain destination as "… Caltrain Statio". Clean before
+// cutting:
+//   - Caltrain spells "<place> Caltrain Station <bound>" into every
+//     destination; the screen is already one direction, so both are pure width
+//     ("San Jose Diridon Caltrain Station Southbound" -> "San Jose Diridon").
+//   - A trailing parenthetical is a qualifier, not the name ("Millbrae
+//     (Caltrain Transfer Platform)" -> "Millbrae").
+//   - Only if it is still too long, abbreviate a leading compass word so the
+//     distinguishing tail survives ("Berryessa / North San Jose" ->
+//     "Berryessa / N San Jose") rather than losing the end to the cut.
+// The 24-char cap remains as a payload bound; the watch fits the result to the
+// row and adds an ellipsis if even the cleaned name overflows.
+var DEST_MAX = 24;
+var DEST_CALTRAIN_RE = /\s+Caltrain Station\b/i;
+var DEST_BOUND_RE = /\s+(North|South|East|West)bound\b/i;
+var DEST_PAREN_RE = /\s*\([^)]*\)\s*$/;
+var DEST_COMPASS_RE = /\b(North|South|East|West)\s+(?=\S)/g;
+function cleanDest(agency, raw) {
+  var d = String(raw || "");
+  if (agency === "CT") d = d.replace(DEST_BOUND_RE, "").replace(DEST_CALTRAIN_RE, "");
+  d = d.replace(DEST_PAREN_RE, "");
+  if (d.length > DEST_MAX) {
+    d = d.replace(DEST_COMPASS_RE, function (m, dir) { return dir.charAt(0) + " "; });
+  }
+  return d.slice(0, DEST_MAX);
+}
+
 // limit: how many arrivals to return (watch "load more" raises it). Bounded
 // to keep the AppMessage payload under the watch's ~1 KB parse budget.
 var MAX_ARRIVALS = 10;
@@ -743,11 +773,9 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
       if (!name) continue;
       var entry = {
         line: name.slice(0, 10),
-        dest: String(
-          (Array.isArray(mvj.DestinationName)
-            ? mvj.DestinationName[0]
-            : mvj.DestinationName) || ""
-        ).slice(0, 24),
+        dest: cleanDest(agency, Array.isArray(mvj.DestinationName)
+          ? mvj.DestinationName[0]
+          : mvj.DestinationName),
         when: now + ms
       };
       if (agency === "BA") {
