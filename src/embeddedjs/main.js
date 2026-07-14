@@ -32,6 +32,13 @@ const render = new Poco(screen);
 const fontHeader = new render.Font("Gothic-Bold", 18);
 const fontRow = new render.Font("Gothic-Bold", 18);
 const fontSub = new render.Font("Gothic-Regular", 14);
+// The agency code leading each list subtitle, so it reads as a label rather
+// than as the first word of the line. Same size as fontSub, so it sits on the
+// same baseline and the rest of the subtitle just starts after it. Gothic has
+// a bold at every one of its sizes (14/18/24/28), so this pair is valid —
+// an invalid family/size pair builds fine and blanks the screen at runtime
+// (CLAUDE.md §12 item 11). Costs one more Font object of watch heap.
+const fontAgency = new render.Font("Gothic-Bold", 14);
 const fontBig = new render.Font("Leco-Bold", 26);
 const fontLine = new render.Font("Gothic-Bold", 24); // bus/route number, arrivals screen
 // Minutes-column entries too wide for fontBig: the "Now" label and any 3-digit
@@ -77,6 +84,41 @@ const LINE_COLOR_CODES = {
   o: render.makeColor(210, 110, 0),
   b: render.makeColor(0, 90, 200)
 };
+
+// The agency code leading each list subtitle draws in that agency's own brand
+// color, so "which system is this" reads before the text does. Approximations
+// of each operator's livery/wordmark, darkened where needed to stay legible as
+// 14px text on white. Note Muni and Caltrain are both genuinely red, and BART
+// and SamTrans both genuinely blue — the two-letter code is what identifies
+// the agency, and the color reinforces it rather than carrying it alone.
+// Unlisted agencies (any ExtraAgencies code) just draw in the subtitle gray.
+const AGENCY_COLORS = {
+  SF: render.makeColor(198, 12, 48),   // Muni red
+  BA: render.makeColor(0, 100, 164),   // BART blue
+  CT: render.makeColor(227, 24, 55),   // Caltrain red
+  AC: render.makeColor(0, 131, 62),    // AC Transit green
+  GG: render.makeColor(200, 70, 30),   // Golden Gate orange
+  SM: render.makeColor(0, 87, 158)     // SamTrans blue
+};
+
+// Separator the phone puts before a stop's direction letter ("Bayshore · N").
+// Must stay in step with TOKEN_SEP in src/pkjs/index.js — the watch has to
+// find the token to protect it from the ellipsize, and to draw it in its own
+// color (see fitVisibleRows).
+const DIR_SEP = " · ";
+
+// The favorite star, drawn as its own piece of the title so it can carry its
+// own color: amber, midway between yellow and orange, dark enough to hold up
+// as a glyph on white. LINE_COLOR_CODES.y is the same idea for BART's yellow.
+const STAR = "★ ";
+const STAR_COLOR = render.makeColor(240, 165, 15);
+// Measured once at module load, not per row — a fixed string in a fixed font.
+// (Module-load measurement is established here: see HEADER_BUSY_W.)
+const STAR_W = render.getTextWidth(STAR, fontRow);
+
+// The direction token and its middot ride BEHIND the name: they identify the
+// stop but they are not its name, and at full black they competed with it.
+const TOKEN_GRAY = GRAY;
 
 const HEADER_H = 28;
 const ROW_H = 40;
@@ -271,12 +313,43 @@ function fitVisibleRows() {
     const row = state.rows[i];
     if (i >= state.top && i < end) {
       if (row.title === undefined) {
-        row.title = ellipsize((row.fav ? "★ " : "") + row.name, fontRow, LIST_TEXT_W);
-        row.subtitle = ellipsize(row.sub, fontSub, LIST_TEXT_W);
+        // The title is drawn in up to THREE pieces, each with its own color:
+        // the ★ (amber), the name (black), and the trailing " · N" direction
+        // token (gray). Everything they need — the substrings and their x
+        // positions — is computed HERE, so draw() only calls drawText.
+        //
+        // The token also has to SURVIVE: it is the entire reason two otherwise
+        // identical stops read apart, and ellipsizing cuts from the END of a
+        // string, so fitting the whole label would eat the token off exactly
+        // the long names that most need it. Fit the NAME to what the star and
+        // the token leave, and place them around it.
+        const cut = row.name.lastIndexOf(DIR_SEP);
+        row.token = cut > 0 ? row.name.slice(cut) : "";
+        row.titleX = 6 + (row.fav ? STAR_W : 0);
+        const tokenW = row.token ? render.getTextWidth(row.token, fontRow) : 0;
+        row.title = ellipsize(
+          cut > 0 ? row.name.slice(0, cut) : row.name,
+          fontRow,
+          LIST_TEXT_W - (row.fav ? STAR_W : 0) - tokenW
+        );
+        row.tokenX = row.titleX + render.getTextWidth(row.title, fontRow);
+        // The subtitle is drawn in TWO pieces so the leading agency code can
+        // take its brand color (AGENCY_COLORS) and its bold: measure the code
+        // here and fit the remainder to what's left. The phone always builds
+        // the subtitle as agency + the rest ("SF · 320 m · IB · 14,49"), so
+        // slicing the code's length off the front is exact.
+        row.agencyW = render.getTextWidth(row.agency, fontAgency);
+        row.subtitle = ellipsize(
+          row.sub.slice(row.agency.length), fontSub, LIST_TEXT_W - row.agencyW
+        );
       }
     } else if (row.title !== undefined) {
       row.title = undefined;
       row.subtitle = undefined;
+      row.token = undefined;
+      row.titleX = undefined;
+      row.tokenX = undefined;
+      row.agencyW = undefined;
     }
   }
 }
@@ -368,8 +441,26 @@ function draw() {
         // selection stays white-on-accent so it's always readable.
         const fg = selected ? WHITE : row.dim ? GRAY : BLACK;
         const sub = selected ? WHITE : row.dim ? GRAY : SUB_GRAY;
-        render.drawText(row.title, fontRow, fg, 6, y + 2);
-        render.drawText(row.subtitle, fontSub, sub, 6, y + 22);
+        // The agency code takes its brand color, but only on an ordinary row:
+        // selection is white-on-accent (a dark brand blue on the blue bar
+        // would be unreadable) and a dimmed row stays uniformly gray, which is
+        // the whole signal that nothing is arriving there.
+        const agFg = selected || row.dim ? sub : (AGENCY_COLORS[row.agency] || sub);
+        // Star: amber on any ordinary row, white when selected. It does NOT
+        // gray out with a dimmed row — being a favorite has nothing to do with
+        // whether a bus is coming, and the star is what you scan the list for.
+        if (row.fav) {
+          render.drawText(STAR, fontRow, selected ? WHITE : STAR_COLOR, 6, y + 2);
+        }
+        render.drawText(row.title, fontRow, fg, row.titleX, y + 2);
+        // Direction token rides behind the name in gray — it identifies the
+        // stop, but it is not part of what the stop is called.
+        if (row.token) {
+          render.drawText(row.token, fontRow, selected ? WHITE : TOKEN_GRAY,
+                          row.tokenX, y + 2);
+        }
+        render.drawText(row.agency, fontAgency, agFg, 6, y + 22);
+        render.drawText(row.subtitle, fontSub, sub, 6 + row.agencyW, y + 22);
       }
     }
   } else {
@@ -618,8 +709,12 @@ function fetchMore() {
       const more = resp.rows || [];
       if (!more.length) { state.moreExhausted = true; return; }
       for (const r of more) {
+        // A load-more row CAN be a favorite (one past the hide line, which
+        // never made the favorites block) and must show its star. It does not
+        // disturb the cursor below: the phone's `off` counts rows handed over,
+        // starred or not, so this advances by more.length either way.
         state.rows.push({
-          agency: r.a, code: r.c, name: r.n, sub: r.s, fav: false, dim: !!r.m
+          agency: r.a, code: r.c, name: r.n, sub: r.s, fav: !!r.f, dim: !!r.m
         });
       }
       state.moreOff += more.length; // cursor advances even when rows are evicted
