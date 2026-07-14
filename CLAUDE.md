@@ -158,9 +158,17 @@ before inventing a size.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
   the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
   capped 10, edited from the watch's “fav” request and the Clay page's
-  show/hide toggles), the cached rows list (`rows.v1`), and the 7-day stop
-  caches (`stops511.v2.<AGENCY>` — v2 since BART collapsed from platforms to
-  stations; `dropStaleStopCaches()` sweeps the orphaned v1 keys).
+  show/hide toggles), the cached rows list (`rows.v1`), the 7-day stop caches
+  (`stops511.v3.<AGENCY>` — v3 since BART stop codes became station-direction;
+  `dropStaleStopCaches()` sweeps the orphaned v1/v2 keys), and the persisted
+  agency-wide stop-info maps (`stopinfo.v3.<AGENCY>`). The stop-info version
+  tracks the stop-code shape — bump both together.
+- Stop-info is served **stale-while-revalidate** (`getStopInfo`): it is the
+  fattest endpoint in the API and pkjs is torn down on app close, so an
+  in-memory-only cache re-downloaded all of it on every launch and blocked
+  the rows response on the whole per-agency fan-out. Persisting it makes a
+  cold launch serve yesterday's map at once; safe because a stale map only
+  **grays** a row (never hides it) and the refresh runs behind the serve.
 - The “fav” request carries the state it **wants** (`w:1`/`w:0`), not a
   flip. It was a blind toggle until 2026-07-14, so a watch holding a stale
   ★ flag would unstar the stop the user meant to star. Anything that
