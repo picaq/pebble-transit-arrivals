@@ -453,73 +453,152 @@ function lineToken(agency, line) {
 
 // One agency-wide StopMonitoring call (no stopcode) answers, for every stop
 // with upcoming service: which lines serve it, in which direction(s), and —
-// by mere presence in the map — that something is arriving. Cached 10 min
-// (a stop's lines/directions change slowly). This single cached call powers
-// the list subtitles AND replaces what used to be one StopMonitoring call
-// per favorite for the has-arrivals check.
+// by mere presence in the map — that something is arriving. This single call
+// powers the list subtitles AND the favorites' has-arrivals check.
+//
+// It is the fattest endpoint in the API (Muni is tens of thousands of visits,
+// multiple MB), and it is the dominant cost of a cold app launch: pkjs is torn
+// down when the watchapp closes, so an in-memory-only cache is empty on every
+// relaunch and every launch re-downloaded one of these PER agency, with the
+// rows response blocked on all of them (index.js withInfo). So the map is now
+// PERSISTED and served stale-while-revalidate, exactly like the stop lists:
+//
+//   fresh   (< TTL)  serve from cache, no network.
+//   stale   (≥ TTL)  serve the cached map IMMEDIATELY, refresh in background.
+//   absent           download and block (first-ever launch for the agency).
+//
+// Serving a stale map is safe here in a way it would not be for arrivals: the
+// lines and directions it carries change on the timescale of service changes,
+// and its only time-sensitive use — the "no arrivals" dimming — merely GRAYS a
+// row, never hides it. A stop wrongly dimmed by a few-hour-old map is still
+// shown and still tappable, and the background refresh corrects it. The
+// alternative (blocking a launch on multiple MB per agency) is far worse.
 var STOP_INFO_TTL_MS = 10 * 60 * 1000;
-var stopInfoCache = {}; // agency -> { ts, map: { code: { dirs: [], lines: [] } } }
+// Persisted per agency. Versioned on the SHAPE of a stop code, like the stop
+// cache (STOP_CACHE_PREFIX) — the map is keyed by stop code (station-direction
+// for a split agency), so a code-shape change must invalidate it. Bump both
+// together.
+var STOP_INFO_PREFIX = "stopinfo.v3.";
+var stopInfoCache = {};      // agency -> { ts, map } — in-memory hot copy
+var stopInfoRefreshing = {}; // agency -> 1 while a download runs
+var stopInfoWaiters = {};    // agency -> [cb] sharing that one in-flight download
 
-function getStopInfo(agency, apiKey, cb) {
-  var cached = stopInfoCache[agency];
-  if (cached && Date.now() - cached.ts < STOP_INFO_TTL_MS) {
-    return cb(null, cached.map);
+function loadStopInfoDisk(agency) {
+  try {
+    var raw = localStorage.getItem(STOP_INFO_PREFIX + agency);
+    return raw ? JSON.parse(raw) : null; // { ts, map }
+  } catch (e) {
+    return null;
   }
-  // The agency-wide feed reports each visit against the PLATFORM it calls at,
-  // so for a split agency its MonitoringRefs are codes our stop list no longer
-  // has. Fold each onto the (station, direction) it actually serves, through
-  // the same alias map that built the list — otherwise every BART stop is
-  // missing from this map, which reads as "nothing is arriving" and would dim
-  // all of them and strip their line lists. Platform codes are ALSO kept as
-  // their own keys, which is how buildRows learns the direction of a favorite
-  // saved against a retired platform id. The stop cache is warm here (callers
-  // resolve stops first), so this is a localStorage read, not a download.
+}
+
+function saveStopInfoDisk(agency, entry) {
+  try {
+    localStorage.setItem(STOP_INFO_PREFIX + agency, JSON.stringify(entry));
+  } catch (e) {
+    // Quota — carry on; a failed persist just costs a re-download next launch,
+    // which is exactly the old behavior. Never corrupts the stop lists (their
+    // own keys are already written).
+    console.log("511: stop-info save failed for " + agency + ": " + e.message);
+  }
+}
+
+// Build the stop-info map from one agency-wide StopMonitoring response.
+// The feed reports each visit against the PLATFORM it calls at, so for a split
+// agency its MonitoringRefs are codes our stop list no longer has. Fold each
+// onto the (station, direction) it serves, through the same alias map that
+// built the list — otherwise every BART stop is absent from the map, reads as
+// "nothing is arriving", and every station dims with its lines stripped.
+// Platform codes are ALSO kept as their own keys, which is how buildRows learns
+// the direction of a favorite saved against a retired platform id.
+function buildStopInfoMap(agency, data, alias) {
+  var visits;
+  try {
+    var delivery = data.ServiceDelivery.StopMonitoringDelivery;
+    if (Array.isArray(delivery)) delivery = delivery[0];
+    visits = delivery.MonitoredStopVisit || [];
+  } catch (e) {
+    return null;
+  }
+  if (!Array.isArray(visits)) visits = [visits];
+  var map = {};
+  for (var i = 0; i < visits.length; i++) {
+    var v = visits[i];
+    var mvj = v && v.MonitoredVehicleJourney;
+    if (!mvj) continue;
+    var ref = String(v.MonitoringRef ||
+      (mvj.MonitoredCall && mvj.MonitoredCall.StopPointRef) || "");
+    if (!ref) continue;
+    var dir = String(mvj.DirectionRef || "");
+    var line = lineToken(agency, mvj.LineRef);
+    var code = ref;
+    if (SPLIT_BY_DIRECTION[agency]) {
+      var base = (alias && alias[ref]) || ref;
+      code = dir ? base + DIR_CODE_SEP + dir : base;
+      var pe = map[ref] || (map[ref] = { dirs: [], lines: [] });
+      if (dir && pe.dirs.indexOf(dir) < 0) pe.dirs.push(dir);
+      if (line && pe.lines.indexOf(line) < 0) pe.lines.push(line);
+    }
+    var e = map[code] || (map[code] = { dirs: [], lines: [] });
+    if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
+    if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
+  }
+  return map;
+}
+
+// Download and rebuild the map, updating both caches. Concurrent callers share
+// one download (stopInfoWaiters) — the fan-out in buildRows and the favorites'
+// has-arrivals check would otherwise fire the same agency's multi-MB feed more
+// than once. cb may be omitted for a fire-and-forget background refresh.
+function downloadStopInfo(agency, apiKey, cb) {
+  if (stopInfoRefreshing[agency]) {
+    if (cb) (stopInfoWaiters[agency] = stopInfoWaiters[agency] || []).push(cb);
+    return;
+  }
+  stopInfoRefreshing[agency] = 1;
   fetchStops(agency, apiKey, function (sErr, stops, alias) {
     var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
       "&agency=" + encodeURIComponent(agency) + "&format=json";
     getJSON(url, function (err, data) {
-      if (err) return cb(err);
-      var visits;
-      try {
-        var delivery = data.ServiceDelivery.StopMonitoringDelivery;
-        if (Array.isArray(delivery)) delivery = delivery[0];
-        visits = delivery.MonitoredStopVisit || [];
-      } catch (e) {
-        return cb(new Error("Unexpected 511 response"));
-      }
-      if (!Array.isArray(visits)) visits = [visits];
-      var map = {};
-      for (var i = 0; i < visits.length; i++) {
-        var v = visits[i];
-        var mvj = v && v.MonitoredVehicleJourney;
-        if (!mvj) continue;
-        var ref = String(v.MonitoringRef ||
-          (mvj.MonitoredCall && mvj.MonitoredCall.StopPointRef) || "");
-        if (!ref) continue;
-        var dir = String(mvj.DirectionRef || "");
-        var line = lineToken(agency, mvj.LineRef);
-        // The key this visit counts toward: the station-direction stop for a
-        // split agency, the stop itself for everyone else.
-        var code = ref;
-        if (SPLIT_BY_DIRECTION[agency]) {
-          var base = (alias && alias[ref]) || ref;
-          code = dir ? base + DIR_CODE_SEP + dir : base;
-          // Keep the raw platform entry too — favorites saved against a
-          // retired platform id learn their direction from it (buildRows).
-          var pe = map[ref] || (map[ref] = { dirs: [], lines: [] });
-          if (dir && pe.dirs.indexOf(dir) < 0) pe.dirs.push(dir);
-          if (line && pe.lines.indexOf(line) < 0) pe.lines.push(line);
-        }
-        var e = map[code] || (map[code] = { dirs: [], lines: [] });
-        if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
-        if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
-      }
-      stopInfoCache[agency] = { ts: Date.now(), map: map };
-      console.log("stop info " + agency + ": " + visits.length + " visits, " +
+      var waiters = stopInfoWaiters[agency] || [];
+      delete stopInfoWaiters[agency];
+      delete stopInfoRefreshing[agency];
+      var done = function (e, map) {
+        if (cb) cb(e, map);
+        for (var i = 0; i < waiters.length; i++) waiters[i](e, map);
+      };
+      if (err) return done(err);
+      var map = buildStopInfoMap(agency, data, alias);
+      if (!map) return done(new Error("Unexpected 511 response"));
+      var entry = { ts: Date.now(), map: map };
+      stopInfoCache[agency] = entry;
+      saveStopInfoDisk(agency, entry);
+      console.log("stop info " + agency + ": " +
         Object.keys(map).length + " stops");
-      cb(null, map);
+      done(null, map);
     });
   });
+}
+
+function getStopInfo(agency, apiKey, cb) {
+  var now = Date.now();
+  var entry = stopInfoCache[agency];
+  // Fall back to the persisted copy on a cold pkjs (the whole point): a launch
+  // finds yesterday's map on disk and serves it at once instead of downloading.
+  if (!entry) {
+    var disk = loadStopInfoDisk(agency);
+    if (disk && disk.map) stopInfoCache[agency] = entry = disk;
+  }
+  if (entry) {
+    // Stale-while-revalidate: serve whatever we have, refresh behind it if the
+    // fresh window has passed. (See the block comment above for why serving a
+    // stale map is safe.)
+    if (now - entry.ts >= STOP_INFO_TTL_MS && !stopInfoRefreshing[agency]) {
+      downloadStopInfo(agency, apiKey); // fire-and-forget
+    }
+    return cb(null, entry.map);
+  }
+  downloadStopInfo(agency, apiKey, cb); // absent: block on the first download
 }
 
 /**

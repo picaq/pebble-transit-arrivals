@@ -11,6 +11,14 @@ https://511.org/open-data/transit (spec PDF linked from that page).
 - **Rate limit: 60 requests / 3600 s per key** (default; can request more).
 - Always pass `format=json`. Responses are gzip-compressed and **begin with
   a UTF-8 BOM (`\uFEFF`)** — strip it before `JSON.parse`.
+- **The agency-wide `StopMonitoring` call (no `stopcode`) is the fattest
+  endpoint here** — Muni is tens of thousands of visits, several MB. This app
+  makes one per enabled agency to build the list subtitles and the favorites’
+  has-arrivals check, so on a cold launch that fan-out dominates. Both the
+  compacted stop lists and the derived stop-info maps are cached in phone
+  localStorage and served stale-while-revalidate, so a warm launch makes
+  **no** request until the watch actually opens a stop (`getStopInfo`,
+  `fetchStops`).
 
 ## Operator codes used by this app
 
