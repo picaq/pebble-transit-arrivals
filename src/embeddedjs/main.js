@@ -715,15 +715,16 @@ function stopRefreshTimer() {
   }
 }
 
-// Toggle the current stop's favorite state on the phone (which owns the
-// list). In-flight guard so repeated triggers can't stack request cycles
-// (playbook §B). Callers decide the gesture: tap to favorite, long-press
-// to unfavorite (see the button handler).
+// Set the current stop's favorite state on the phone (which owns the list).
+// We send the state we WANT, not a flip — see protocol.setFav. In-flight
+// guard so repeated triggers can't stack request cycles (playbook §B).
+// Callers decide the gesture: tap to favorite, long-press to unfavorite
+// (see the button handler).
 function toggleFav() {
   if (!state.stop || state.favPending) return;
   state.favPending = true;
   const stop = state.stop;
-  protocol.toggleFav(stop.agency, stop.code, stop.name)
+  protocol.setFav(stop.agency, stop.code, stop.name, stop.fav ? 0 : 1)
     .then(resp => {
       state.favPending = false;
       stop.fav = !!resp.fav;

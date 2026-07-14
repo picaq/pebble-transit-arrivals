@@ -156,9 +156,17 @@ before inventing a size.
   device this app runs on (the phone’s `mig` import handler remains).
   Also available: `device.keyValue` and `device.files` for binary/large data.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
-  the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
-  capped 10, edited from the watch’s “fav” request and the Clay page’s
-  show/hide toggles), and the 7-day stop caches (`stops511.v1.<AGENCY>`).
+  the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
+  capped 10, edited from the watch's “fav” request and the Clay page's
+  show/hide toggles), the cached rows list (`rows.v1`), and the 7-day stop
+  caches (`stops511.v2.<AGENCY>` — v2 since BART collapsed from platforms to
+  stations; `dropStaleStopCaches()` sweeps the orphaned v1 keys).
+- The “fav” request carries the state it **wants** (`w:1`/`w:0`), not a
+  flip. It was a blind toggle until 2026-07-14, so a watch holding a stale
+  ★ flag would unstar the stop the user meant to star. Anything that
+  changes the favorites list, or the settings that shape the list, must
+  call `clearRowsCache()`: `rows.v1` embeds the favorites block and every
+  row's star flag, and it is served **as final** (no revalidation).
 - Always merge stored settings over defaults (spread pattern) so adding new
   settings fields never breaks old installs.
 

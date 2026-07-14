@@ -23,7 +23,11 @@
  *                          // watch appends them; empty rows = no more).
  *   { id, cmd: "arrivals", agency, stop, lim? }  // lim = how many arrivals to
  *                          // return (watch "load more"; phone caps it)
- *   { id, cmd: "fav",      a, c, n }   // toggle favorite (agency/code/name)
+ *   { id, cmd: "fav",      a, c, n, w }  // set favorite (agency/code/name);
+ *                          // w=1 favorite, w=0 unfavorite. The state asked
+ *                          // FOR, not a flip — the phone applies it
+ *                          // idempotently so a stale `f` flag on the watch
+ *                          // cannot silently unstar a stop.
  * Response JSON:
  *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }], stale? }
  *                           // One pre-merged, pre-sorted, display-ready list:
@@ -222,9 +226,16 @@ export const protocol = {
     return request(body);
   },
 
-  /** Toggle a favorite on the phone. Resolves to { fav: 1|0 } (new state). */
-  toggleFav(agency, code, name) {
-    return request({ cmd: "fav", a: agency, c: code, n: name });
+  /**
+   * Set a stop's favorite state on the phone. `want` is the state we are
+   * asking FOR (1 favorite, 0 unfavorite), not a flip: the phone applies it
+   * idempotently. A blind toggle trusted the watch's `f` flag, and a stale
+   * flag (the phone's rows cache used to serve pre-favorite rows for 3 min
+   * after a star) turned the user's "star it again" into a silent unstar.
+   * Resolves to { fav: 1|0 } (state after the write).
+   */
+  setFav(agency, code, name, want) {
+    return request({ cmd: "fav", a: agency, c: code, n: name, w: want });
   }
 };
 
