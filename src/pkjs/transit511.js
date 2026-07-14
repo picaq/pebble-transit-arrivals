@@ -36,7 +36,12 @@
 /* global localStorage, XMLHttpRequest */
 
 var BASE = "https://api.511.org/transit";
-var STOP_CACHE_PREFIX = "stops511.v1.";
+// The key is versioned because the SHAPE of a stop code has changed twice:
+// v1 held BART platform ids, v2 briefly held bare station ids, and v3 holds
+// station-direction codes ("901809-N", see SPLIT_BY_DIRECTION). Serving an old
+// generation would hand the watch codes that no longer resolve, so the bump is
+// mandatory whenever a code's shape changes. index.js sweeps the dead keys.
+var STOP_CACHE_PREFIX = "stops511.v3.";
 var STOP_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /* ------------------------------------------------------------------ http */
@@ -73,7 +78,8 @@ function loadStopCache(agency) {
     if (!raw) return null;
     var entry = JSON.parse(raw);
     return {
-      stops: entry.stops, // [[code, name, lat, lon], ...]
+      stops: entry.stops,          // [[code, name, lat, lon], ...]
+      alias: entry.alias || {},    // old platform code -> station code
       stale: Date.now() - entry.ts > STOP_CACHE_TTL_MS
     };
   } catch (e) {
@@ -81,11 +87,11 @@ function loadStopCache(agency) {
   }
 }
 
-function saveStopCache(agency, stops) {
+function saveStopCache(agency, stops, alias) {
   try {
     localStorage.setItem(
       STOP_CACHE_PREFIX + agency,
-      JSON.stringify({ ts: Date.now(), stops: stops })
+      JSON.stringify({ ts: Date.now(), stops: stops, alias: alias || {} })
     );
   } catch (e) {
     // Quota exceeded — drop oldest caches and carry on uncached.
@@ -93,30 +99,148 @@ function saveStopCache(agency, stops) {
   }
 }
 
+/*
+ * Agencies addressed per PLATFORM but RIDDEN per direction: one stop per
+ * (station, direction) — "Balboa Park · N" and "Balboa Park · S".
+ *
+ * BART gives every platform its own stop id, and those ids are neither one
+ * station nor one direction (sampled live 2026-07-14):
+ *
+ *   - 12th Street has THREE ids and Balboa Park two, all sharing one name —
+ *     so a platform-per-row list showed the same station two or three times
+ *     over with nothing to choose between.
+ *   - Platforms are not directions either: 12th Street and Daly City each have
+ *     two NORTHBOUND platforms (different line groups), so even a direction
+ *     token would not separate those rows.
+ *   - And at 12 of the 50 stations (Bay Fair, Coliseum, …) a single platform
+ *     serves BOTH directions.
+ *
+ * But 38 of the 50 stations DO have direction-specific platforms, so
+ * collapsing every station to a single undirected row — which this code did
+ * briefly — throws away the one distinction a rider actually rides on.
+ *
+ * Direction is the right axis, and the parent station is the right way to
+ * query it. Every platform carries Extensions.ParentStation, and 511 accepts
+ * that parent id as a StopMonitoring stopcode in its own right: code 901809
+ * (Balboa Park) returns all 43 upcoming trains across both directions, each
+ * tagged with DirectionRef. Querying a single PLATFORM would not do — 12th
+ * Street's two northbound platforms serve different lines, so one platform's
+ * feed is only *some* of the northbound trains. So: query the parent, filter
+ * by DirectionRef (getArrivals), and let each station stand as two stops.
+ *
+ * A terminus has no departures one way, so that direction's row simply comes
+ * back with nothing arriving and dims — which is true.
+ *
+ * BART ONLY, deliberately. Muni publishes no ParentStation at all (its two
+ * sides of a street are genuinely different places to stand). Caltrain's is a
+ * slug ("22nd_street") that is not a stopcode, and its children are already
+ * exactly the two directional platforms — its stop NAMES say so ("… Station
+ * Northbound"), so it needs no help.
+ */
+var SPLIT_BY_DIRECTION = { BA: 1 };
+var STATION_DIRS = ["N", "S"];
+// Joins a station id to a direction in a synthetic stop code ("901809-N").
+// Station ids are numeric, so this can never be mistaken for part of one.
+// getArrivals splits it back off before it goes anywhere near the API.
+var DIR_CODE_SEP = "-";
+
+function splitDirCode(agency, stopCode) {
+  if (!SPLIT_BY_DIRECTION[agency]) return null;
+  var i = String(stopCode).lastIndexOf(DIR_CODE_SEP);
+  if (i <= 0) return null;
+  return { stop: stopCode.slice(0, i), dir: stopCode.slice(i + 1) };
+}
+
+// The station's name when its platforms disagree: whichever name most
+// platforms use, shortest as the tie-break. BART's only disagreement is
+// Coliseum — two platforms say "Coliseum", the airport-shuttle one says
+// "Coliseum - OAC" — and the station is Coliseum.
+function pickName(names) {
+  var best = null;
+  var bestN = -1;
+  for (var k in names) {
+    if (names[k] > bestN || (names[k] === bestN && k.length < best.length)) {
+      best = k;
+      bestN = names[k];
+    }
+  }
+  return best;
+}
+
 /**
  * Parse the 511 stops response (SIRI/NeTEx envelope) into compact tuples.
  * Structure: Contents.dataObjects.ScheduledStopPoint[] with
- *   { id, Name, Location: { Latitude, Longitude } }
+ *   { id, Name, Location: { Latitude, Longitude }, Extensions: { ParentStation } }
  * Coded defensively — if 511 tweaks the envelope, fix it here only.
+ *
+ * Returns { stops: [[code, name, lat, lon], ...], alias: { platformId: station } }.
+ * `alias` is non-empty only for a SPLIT_BY_DIRECTION agency: it maps each
+ * platform id onto the STATION (not the final stop code — the direction has to
+ * come from live data), so favorites saved against the old per-platform codes
+ * can be migrated instead of going dead, and so getStopInfo can fold each
+ * platform's visits onto the station-direction they belong to.
+ *
+ * For a split agency each station yields one stop PER DIRECTION
+ * ("901809-N", "901809-S"), all sharing the station's name and centroid.
+ * For every other agency each stop is its own group, so this reduces to the
+ * flat tuple list it always was.
  */
-function parseStops(data) {
+function parseStops(data, agency) {
   var points =
     data &&
     data.Contents &&
     data.Contents.dataObjects &&
     data.Contents.dataObjects.ScheduledStopPoint;
-  if (!points) return [];
+  if (!points) return { stops: [], alias: {} };
   if (!Array.isArray(points)) points = [points];
-  var out = [];
+
+  var split = !!SPLIT_BY_DIRECTION[agency];
+  var groups = {};
+  var order = [];
+  var alias = {};
+
   for (var i = 0; i < points.length; i++) {
     var p = points[i];
     var loc = p.Location || {};
     var lat = parseFloat(loc.Latitude);
     var lon = parseFloat(loc.Longitude);
     if (!isFinite(lat) || !isFinite(lon)) continue;
-    out.push([String(p.id), String(p.Name || p.id), lat, lon]);
+    var code = String(p.id);
+    var parent = (p.Extensions || {}).ParentStation;
+    var key = split && parent ? String(parent) : code;
+    if (key !== code) alias[code] = key;
+    var g = groups[key];
+    if (!g) {
+      g = groups[key] = { names: {}, lat: 0, lon: 0, n: 0 };
+      order.push(key);
+    }
+    var name = String(p.Name || p.id);
+    g.names[name] = (g.names[name] || 0) + 1;
+    // A station sits at the centroid of its platforms — they are metres apart,
+    // so this is exact enough for a walking distance and never lands off-site.
+    g.lat += lat;
+    g.lon += lon;
+    g.n++;
   }
-  return out;
+
+  var out = [];
+  for (var j = 0; j < order.length; j++) {
+    var gr = groups[order[j]];
+    var nm = pickName(gr.names);
+    var la = gr.lat / gr.n;
+    var lo = gr.lon / gr.n;
+    if (split) {
+      // One stop per direction. Both are real places to stand and both are
+      // separately favoritable; the one a terminus doesn't serve just comes
+      // back with nothing arriving.
+      for (var d = 0; d < STATION_DIRS.length; d++) {
+        out.push([order[j] + DIR_CODE_SEP + STATION_DIRS[d], nm, la, lo]);
+      }
+    } else {
+      out.push([order[j], nm, la, lo]);
+    }
+  }
+  return { stops: out, alias: alias };
 }
 
 // One background revalidation per agency at a time — concurrent nearby
@@ -130,12 +254,14 @@ function downloadStops(agency, apiKey, cb) {
     "&operator_id=" + encodeURIComponent(agency) + "&format=json";
   getJSON(url, function (err, data) {
     if (err) return cb(err);
-    var stops = parseStops(data);
-    if (stops.length) saveStopCache(agency, stops);
-    cb(null, stops);
+    var parsed = parseStops(data, agency);
+    if (parsed.stops.length) saveStopCache(agency, parsed.stops, parsed.alias);
+    cb(null, parsed.stops, parsed.alias);
   });
 }
 
+// cb(err, stops, alias) — alias maps a retired per-platform code onto the
+// station that replaced it (empty for every agency but BART; see parseStops).
 function fetchStops(agency, apiKey, cb) {
   var cached = loadStopCache(agency);
   if (cached) {
@@ -152,7 +278,7 @@ function fetchStops(agency, apiKey, cb) {
           (err ? " failed: " + err.message : " ok"));
       });
     }
-    return cb(null, cached.stops);
+    return cb(null, cached.stops, cached.alias);
   }
   downloadStops(agency, apiKey, cb); // cold cache: nothing to serve, block
 }
@@ -269,8 +395,15 @@ function findNearbyStops(lat, lon, settings, cb) {
           results.push({
             agency: agency,
             code: s[0],
-            // Truncate: watch AppMessage payloads must stay small.
-            name: s[1].slice(0, 28),
+            // The RAW name, only sanity-bounded. It used to be cut to 28
+            // chars here, which silently amputated the one thing that tells
+            // two Caltrain platforms apart: "Bayshore Caltrain Station
+            // Northbound" (35 chars) arrived as "Bayshore Caltrain Station No"
+            // and came out of the display pipeline as "Bayshore Caltrain St",
+            // identical to its southbound twin. The wire cap is index.js's
+            // stopLabel (LIST_NAME_MAX), which is tighter than this and runs
+            // on every row — so this bound only guards memory, never meaning.
+            name: s[1].slice(0, 64),
             dist: Math.round(d),
             eff: Math.round(d / mult)
           });
@@ -294,6 +427,28 @@ function bartLineLetter(line) {
   return m ? m[1].charAt(0).toUpperCase() : null;
 }
 
+/**
+ * The compact token for a line, per agency's idea of what a "line" is.
+ *
+ * Muni and the bus operators publish a route number that is already short
+ * ("14R", "38R"), so a 4-char cut is harmless. BART publishes a colour and
+ * takes its initial (above). Caltrain publishes neither: its LineRef is a
+ * SERVICE PATTERN — "Local Weekday" — and cutting that to 4 chars produced the
+ * meaningless "Loca" in every Caltrain subtitle. Local vs Limited vs Bullet is
+ * the thing a Caltrain rider actually chooses between, so keep exactly that.
+ */
+function lineToken(agency, line) {
+  var s = String(line || "");
+  if (agency === "BA") return (bartLineLetter(s) || s).slice(0, 4);
+  if (agency === "CT") {
+    if (/bullet/i.test(s)) return "Bullet";
+    if (/limited/i.test(s)) return "Ltd";
+    if (/local/i.test(s)) return "Local";
+    return s.slice(0, 6);
+  }
+  return s.slice(0, 4);
+}
+
 /* ------------------------------------------------------ agency stop info */
 
 // One agency-wide StopMonitoring call (no stopcode) answers, for every stop
@@ -310,39 +465,60 @@ function getStopInfo(agency, apiKey, cb) {
   if (cached && Date.now() - cached.ts < STOP_INFO_TTL_MS) {
     return cb(null, cached.map);
   }
-  var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
-    "&agency=" + encodeURIComponent(agency) + "&format=json";
-  getJSON(url, function (err, data) {
-    if (err) return cb(err);
-    var visits;
-    try {
-      var delivery = data.ServiceDelivery.StopMonitoringDelivery;
-      if (Array.isArray(delivery)) delivery = delivery[0];
-      visits = delivery.MonitoredStopVisit || [];
-    } catch (e) {
-      return cb(new Error("Unexpected 511 response"));
-    }
-    if (!Array.isArray(visits)) visits = [visits];
-    var map = {};
-    for (var i = 0; i < visits.length; i++) {
-      var v = visits[i];
-      var mvj = v && v.MonitoredVehicleJourney;
-      if (!mvj) continue;
-      var code = String(v.MonitoringRef ||
-        (mvj.MonitoredCall && mvj.MonitoredCall.StopPointRef) || "");
-      if (!code) continue;
-      var e = map[code] || (map[code] = { dirs: [], lines: [] });
-      var dir = String(mvj.DirectionRef || "");
-      if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
-      var line = String(mvj.LineRef || "");
-      if (agency === "BA") line = bartLineLetter(line) || line;
-      line = line.slice(0, 4);
-      if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
-    }
-    stopInfoCache[agency] = { ts: Date.now(), map: map };
-    console.log("stop info " + agency + ": " + visits.length + " visits, " +
-      Object.keys(map).length + " stops");
-    cb(null, map);
+  // The agency-wide feed reports each visit against the PLATFORM it calls at,
+  // so for a split agency its MonitoringRefs are codes our stop list no longer
+  // has. Fold each onto the (station, direction) it actually serves, through
+  // the same alias map that built the list — otherwise every BART stop is
+  // missing from this map, which reads as "nothing is arriving" and would dim
+  // all of them and strip their line lists. Platform codes are ALSO kept as
+  // their own keys, which is how buildRows learns the direction of a favorite
+  // saved against a retired platform id. The stop cache is warm here (callers
+  // resolve stops first), so this is a localStorage read, not a download.
+  fetchStops(agency, apiKey, function (sErr, stops, alias) {
+    var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
+      "&agency=" + encodeURIComponent(agency) + "&format=json";
+    getJSON(url, function (err, data) {
+      if (err) return cb(err);
+      var visits;
+      try {
+        var delivery = data.ServiceDelivery.StopMonitoringDelivery;
+        if (Array.isArray(delivery)) delivery = delivery[0];
+        visits = delivery.MonitoredStopVisit || [];
+      } catch (e) {
+        return cb(new Error("Unexpected 511 response"));
+      }
+      if (!Array.isArray(visits)) visits = [visits];
+      var map = {};
+      for (var i = 0; i < visits.length; i++) {
+        var v = visits[i];
+        var mvj = v && v.MonitoredVehicleJourney;
+        if (!mvj) continue;
+        var ref = String(v.MonitoringRef ||
+          (mvj.MonitoredCall && mvj.MonitoredCall.StopPointRef) || "");
+        if (!ref) continue;
+        var dir = String(mvj.DirectionRef || "");
+        var line = lineToken(agency, mvj.LineRef);
+        // The key this visit counts toward: the station-direction stop for a
+        // split agency, the stop itself for everyone else.
+        var code = ref;
+        if (SPLIT_BY_DIRECTION[agency]) {
+          var base = (alias && alias[ref]) || ref;
+          code = dir ? base + DIR_CODE_SEP + dir : base;
+          // Keep the raw platform entry too — favorites saved against a
+          // retired platform id learn their direction from it (buildRows).
+          var pe = map[ref] || (map[ref] = { dirs: [], lines: [] });
+          if (dir && pe.dirs.indexOf(dir) < 0) pe.dirs.push(dir);
+          if (line && pe.lines.indexOf(line) < 0) pe.lines.push(line);
+        }
+        var e = map[code] || (map[code] = { dirs: [], lines: [] });
+        if (dir && e.dirs.indexOf(dir) < 0) e.dirs.push(dir);
+        if (line && e.lines.indexOf(line) < 0) e.lines.push(line);
+      }
+      stopInfoCache[agency] = { ts: Date.now(), map: map };
+      console.log("stop info " + agency + ": " + visits.length + " visits, " +
+        Object.keys(map).length + " stops");
+      cb(null, map);
+    });
   });
 }
 
@@ -353,13 +529,21 @@ function getStopInfo(agency, apiKey, cb) {
  * far:1 (the caller drops those from the list) and skip the arrival check.
  * RAIL_AGENCIES favorites use maxCheckM × settings.railRadiusX instead
  * (railScale), the same reach the nearby search gives them.
- * cb(null, [{ agency, code, dist, eff, name?, far?, hasArr? }]) — dist in
- * meters, -1 when the stop can't be found (never far:1 — an unresolved
+ * cb(null, [{ agency, code, canon?, dist, eff, name?, far?, hasArr? }]) — dist
+ * in meters, -1 when the stop can't be found (never far:1 — an unresolved
  * favorite still shows, with its saved name); eff is the rank distance
  * (dist ÷ railScale, -1 alongside an unknown dist) that the caller orders
  * the favorites block by; name comes from the cached stop list (absent on a
  * cache/API miss); hasArr only present when it was actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
+ *
+ * `code` is echoed back exactly as passed in, so the caller can match the
+ * entry to the favorite it stored. `canon` appears only when that stored code
+ * has been RETIRED and the stop now lives under another one — a BART favorite
+ * saved against a platform id before stations were collapsed (see parseStops).
+ * Everything here is already resolved against the canonical stop; the caller
+ * should rewrite the code it has saved, or the favorite dies at the next
+ * arrivals fetch.
  */
 function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
   // Group by agency so each stop list is loaded (and its cache JSON-parsed)
@@ -374,28 +558,46 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
   (function nextAgency() {
     if (!agencies.length) return checkArrivals();
     var agency = agencies.shift();
-    fetchStops(agency, settings.apiKey, function (err, stops) {
+    fetchStops(agency, settings.apiKey, function (err, stops, alias) {
       var codes = byAgency[agency];
       var mult = railScale(agency, settings);
       for (var i = 0; i < codes.length; i++) {
         var dist = -1;
         var name;
+        var code = codes[i];
+        // A favorite may be saved against a code we have since retired: a BART
+        // PLATFORM id (901801), or a bare STATION id from the brief spell when
+        // stations were undirected (901809). Both now live under a
+        // station-direction code (901809-N / -S). Resolve the station here; the
+        // caller picks the direction, which only live data knows (buildRows).
+        var base = (alias && alias[code]) || code;
+        var canonBase = null;
         if (!err) {
           for (var j = 0; j < stops.length; j++) {
-            if (stops[j][0] === codes[i]) {
+            if (stops[j][0] === code) {          // still a real stop
               dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
-              name = stops[j][1].slice(0, 24);
+              name = stops[j][1].slice(0, 64);   // raw — see findNearbyStops
               break;
+            }
+            // Every direction of a station shares its name and centroid, so
+            // any of them answers "where is this station, and what is it
+            // called" for a code that has lost its direction.
+            if (!canonBase &&
+                stops[j][0].indexOf(base + DIR_CODE_SEP) === 0) {
+              dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
+              name = stops[j][1].slice(0, 64);
+              canonBase = base;
             }
           }
         }
         var entry = {
           agency: agency,
-          code: codes[i],
+          code: code, // as stored, so the caller can match its record
           dist: dist,
           eff: dist >= 0 ? Math.round(dist / mult) : -1,
           name: name
         };
+        if (canonBase) entry.canonBase = canonBase;
         if (dist >= 0 && dist > maxCheckM * mult) entry.far = 1;
         entries.push(entry);
       }
@@ -424,7 +626,19 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
         if (!err) {
           entries.forEach(function (entry) {
             if (entry.agency === agency && entry.dist >= 0 && !entry.far) {
-              entry.hasArr = !!map[entry.code];
+              var has = !!map[entry.code];
+              // A favorite still on a retired code has no entry of its own —
+              // any direction of the station it belongs to answers for it,
+              // until buildRows rewrites the record.
+              if (!has && entry.canonBase) {
+                for (var d = 0; d < STATION_DIRS.length; d++) {
+                  if (map[entry.canonBase + DIR_CODE_SEP + STATION_DIRS[d]]) {
+                    has = true;
+                    break;
+                  }
+                }
+              }
+              entry.hasArr = has;
             }
           });
         }
@@ -477,9 +691,17 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
     return cb(null, serveArrivals(cached.list));
   }
 
+  // A split agency's stop code is (station, direction) — "901809-N". Ask 511
+  // for the STATION and keep only the trains going that way. It has to be the
+  // station: 12th Street's two northbound platforms serve different lines, so
+  // querying one platform returns only some of the northbound trains.
+  var sd = splitDirCode(agency, stopCode);
+  var apiStop = sd ? sd.stop : stopCode;
+  var wantDir = sd ? sd.dir : null;
+
   var url = BASE + "/StopMonitoring?api_key=" + encodeURIComponent(apiKey) +
     "&agency=" + encodeURIComponent(agency) +
-    "&stopcode=" + encodeURIComponent(stopCode) + "&format=json";
+    "&stopcode=" + encodeURIComponent(apiStop) + "&format=json";
   getJSON(url, function (err, data) {
     if (err) return cb(err);
     var visits;
@@ -498,14 +720,29 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
     for (var i = 0; i < visits.length && list.length < limit; i++) {
       var mvj = visits[i] && visits[i].MonitoredVehicleJourney;
       if (!mvj) continue;
+      // Wrong way at a station we asked one direction of.
+      if (wantDir && String(mvj.DirectionRef || "") !== wantDir) continue;
       var call = mvj.MonitoredCall || {};
       var when = call.ExpectedArrivalTime || call.ExpectedDepartureTime ||
         call.AimedArrivalTime || call.AimedDepartureTime;
       if (!when) continue;
       var ms = Date.parse(when) - now;
       if (ms < -60000) continue; // already gone
+      // Name the train. Caltrain's LineRef is a service pattern ("Local
+      // Weekday"), so it is tokenized (lineToken). BART's carries a direction
+      // suffix ("Yellow-N") that is pure redundancy now the whole screen is
+      // one direction — the line is "Yellow".
+      var name = String(mvj.LineRef || mvj.PublishedLineName || "");
+      if (agency === "CT") name = lineToken(agency, mvj.LineRef);
+      else if (agency === "BA") name = name.replace(/-[NS]$/, "");
+      // A train we cannot name is noise, not information: it used to render as
+      // a literal "?" beside a time, which tells a rider nothing they can act
+      // on. Every visit across all six agencies carries a LineRef today
+      // (checked 2026-07-14), so this should never fire — but if 511 ever
+      // emits one, drop it rather than showing a "?" row.
+      if (!name) continue;
       var entry = {
-        line: String(mvj.LineRef || mvj.PublishedLineName || "?").slice(0, 10),
+        line: name.slice(0, 10),
         dest: String(
           (Array.isArray(mvj.DestinationName)
             ? mvj.DestinationName[0]
@@ -514,10 +751,10 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
         when: now + ms
       };
       if (agency === "BA") {
-        // Color-named BART lines keep their full name on the arrivals
-        // screen but carry a matching color code the watch maps to its
-        // palette (LINE_COLOR_CODES in main.js). The one-letter compression
-        // applies only to list subtitles (getStopInfo).
+        // Color-named BART lines keep their full name on the arrivals screen
+        // but carry a matching color code the watch maps to its palette
+        // (LINE_COLOR_CODES in main.js). The one-letter compression applies
+        // only to list subtitles (getStopInfo).
         var letter = bartLineLetter(entry.line);
         if (letter) entry.k = letter.toLowerCase();
       }

@@ -59,9 +59,15 @@ var SETTINGS_KEY = "settings.v1";
 // localSecrets.apiKey is a local dev convenience (see scripts/inject-api-key.js
 // and .env.example) — seeds the settings page before you've saved anything
 // via Clay. It is never committed; on a fresh clone it's "".
+// Agencies with a dedicated toggle on the settings page. Anything else in
+// settings.agencies (CT = Caltrain, SC = VTA, …) came from the ExtraAgencies
+// free-text field, and both halves of the Clay round trip — filling the field
+// in showConfiguration and re-reading it in webviewclosed — key off this list.
+var TOGGLED_AGENCIES = ["SF", "BA", "AC", "GG", "SM"];
+
 var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
-  agencies: ["SF", "BA", "AC", "GG", "SM"],
+  agencies: TOGGLED_AGENCIES.slice(),
   radiusM: 500,
   railRadiusX: 1, // BART/Caltrain reach ×this and rank ÷this (1 = off); see transit511 railScale
   maxStops: 8,
@@ -90,6 +96,30 @@ function loadFavs() {
 
 function saveFavs(list) {
   localStorage.setItem(FAVS_KEY, JSON.stringify(list.slice(0, MAX_FAVORITES)));
+}
+
+// Collapse records that now name the same stop. Two of them can only exist
+// because a code was retired under them: favoriting both Balboa Park platforms
+// once made two records, and migrating both onto the station they became
+// (buildRows, via getFavoriteStatus's `canon`) points them at one stop — which
+// is precisely the doubled "Balboa Park (BA)" the settings page was showing.
+// The earliest record wins the slot (favorites are newest-first), but a
+// visible duplicate un-hides it: if you ever starred either platform, you want
+// the station.
+function dedupeFavs(list) {
+  var seen = {};
+  var out = [];
+  list.forEach(function (f) {
+    var key = f.agency + ":" + f.code;
+    var kept = seen[key];
+    if (kept) {
+      if (!f.hide) delete kept.hide;
+      return;
+    }
+    seen[key] = f;
+    out.push(f);
+  });
+  return out;
 }
 
 // One-time import of the legacy watch-side favorites list (the watch sends
@@ -225,6 +255,25 @@ function saveRowsCache(rows) {
   }
 }
 
+// The cached rows embed the favorites block and each row's `f` star flag, so
+// ANY change to the favorites list or to the settings that shape the list
+// (agencies, radius, hide line) makes them a lie. They are served as FINAL
+// (no stale:1, no revalidation — see the cache comment above), so a stale
+// entry is not merely early, it is what the watch shows for the rest of the
+// serve window. Favoriting a stop, quitting, and relaunching inside those
+// 3 minutes used to replay the pre-favorite rows: the stop came back
+// unstarred and a re-star silently unfavorited it (the toggle trusted the
+// watch's `f` flag; protocol.setFav no longer lets it). Drop the cache on
+// every write instead of trying to patch it — a newly starred stop may not
+// even be among the cached rows.
+function clearRowsCache() {
+  try {
+    localStorage.removeItem(ROWS_CACHE_KEY);
+  } catch (x) {
+    // Nothing to do — a failed removal just means the next request rebuilds.
+  }
+}
+
 /* ------------------------------------------------------------------ Clay */
 
 Pebble.addEventListener("showConfiguration", function () {
@@ -236,6 +285,13 @@ Pebble.addEventListener("showConfiguration", function () {
   clay.setSettings("AgencyAC", s.agencies.indexOf("AC") >= 0);
   clay.setSettings("AgencyGG", s.agencies.indexOf("GG") >= 0);
   clay.setSettings("AgencySM", s.agencies.indexOf("SM") >= 0);
+  // Everything not covered by a toggle above (CT, SC, …) goes back into the
+  // free-text field. Without this the field renders EMPTY however many extra
+  // agencies are saved, and the next save reads it as "" — silently dropping
+  // Caltrain from settings.agencies, which is the only way it is ever added.
+  clay.setSettings("ExtraAgencies", s.agencies.filter(function (code) {
+    return TOGGLED_AGENCIES.indexOf(code) < 0;
+  }).join(","));
   clay.setSettings("RadiusM", s.radiusM);
   clay.setSettings("RailRadiusX", s.railRadiusX);
   clay.setSettings("MaxStops", s.maxStops);
@@ -318,6 +374,10 @@ Pebble.addEventListener("webviewclosed", function (e) {
     hideFavKm: Number(val("HideFavKm", 19)) || 19
   };
   saveSettings(settings);
+  // Agencies, radius and the hide line all shape the rows list, and the
+  // favorite show/hide/delete toggles below rewrite its star flags — every
+  // cached row is suspect after a save.
+  clearRowsCache();
   console.log("settings saved: " + JSON.stringify(settings));
 
   // Deletions first (🗑 toggles, confirmed in the webview), then apply the
@@ -390,28 +450,75 @@ function formatDistM(m) {
   return (m / 1000).toFixed(1) + " km";
 }
 
-// " · N · 8,14,49+" from an agency stop-info entry (directions capped at 2,
-// lines capped by a character budget rather than a count — BART's one-letter
-// lines all fit ("Y,R,B,G"), four-char route tokens cap around three —
-// subtitle space on the watch is one ellipsized line).
-var LINES_CHAR_BUDGET = 14;
+// " · IB · 8,14,49" from an agency stop-info entry: the direction (capped at
+// 2) and then EVERY route serving the stop.
+//
+// The line list is deliberately uncapped. It used to be cut to a 14-char
+// budget with a trailing "+", which is the one thing a rider cannot act on —
+// "something else also stops here, good luck" is worse than a longer string,
+// and the watch already ellipsizes a subtitle that overruns its row. What the
+// list must not do is overrun the PAYLOAD: respond() sheds whole rows to stay
+// inside ROWS_BUDGET, so an unbounded subtitle would silently drop stops off
+// the end of the list. LINES_CHAR_BUDGET therefore still exists as a payload
+// backstop, set far above any real stop (measured worst case in the Bay Area
+// is ~30 chars, at Market & 5th) rather than as a display cap.
+var LINES_CHAR_BUDGET = 60;
 function dirLinesSuffix(info) {
   if (!info) return "";
   var s = "";
   if (info.dirs.length) s += " · " + info.dirs.slice(0, 2).join("/");
   if (info.lines.length) {
     var lines = "";
-    var i = 0;
-    while (i < info.lines.length) {
+    for (var i = 0; i < info.lines.length; i++) {
       var next = lines ? lines + "," + info.lines[i] : info.lines[i];
-      if (next.length > LINES_CHAR_BUDGET) break;
+      if (next.length > LINES_CHAR_BUDGET) break; // payload backstop only
       lines = next;
-      i++;
     }
-    s += " · " + lines + (i < info.lines.length ? "+" : "");
+    s += " · " + lines;
   }
   return s;
 }
+
+/* ------------------------------------------------------ direction tokens */
+
+// A stop code is direction-specific far more often than its name admits, and
+// the two 511 agencies that matter here disagree about where they say so:
+//
+//   Caltrain  spells it into the NAME — "Bayshore Caltrain Station Northbound"
+//   BART      doesn't say at all — three ids share "12th Street / Oakland
+//             City Center"; only the live DirectionRef distinguishes them
+//   Muni      likewise: the two sides of a street share one name
+//
+// Live DirectionRef vocabulary, sampled 2026-07-14: BA and CT report "N"/"S",
+// SF reports "IB"/"OB" (plus a little "N"/"S"). Folding Caltrain's spelled-out
+// "…bound" onto those same tokens gives one vocabulary for every agency.
+var BOUND_RE = /\s+(North|South|East|West)bound\b/i;
+var BOUND_TOKEN = { NORTH: "N", SOUTH: "S", EAST: "E", WEST: "W" };
+
+// Every Caltrain stop is "<place> Caltrain Station <bound>". The row already
+// carries "CT · " in its subtitle, so those two words are pure width — they
+// cost half a row and say nothing.
+var AGENCY_FILLER_RE = /\s+Caltrain Station\b/i;
+
+// The title's token is a SINGLE letter — N, S, E, W, I (inbound), O
+// (outbound) — because on the title it is not there to be read as a word: it
+// is there to tell two otherwise identical rows apart at a glance, and the
+// row has ~17 renderable chars to spend on the stop's actual name. The
+// subtitle spells the same direction out in full ("· IB ·", dirLinesSuffix),
+// where there is room for it.
+//
+// "" when the code is NOT direction-specific — two DirectionRefs at one code
+// means both directions board there and no token would tell them apart.
+function dirToken(info) {
+  if (!info || info.dirs.length !== 1) return "";
+  return String(info.dirs[0]).charAt(0).toUpperCase();
+}
+
+// Set off from the name so a lone letter doesn't read as part of it
+// ("Bayshore · N", not "Bayshore N", which invites reading a street name).
+// The middot matches the subtitle's separator; an em dash rendered correctly
+// on hardware but read heavier than the row wanted.
+var TOKEN_SEP = " · ";
 
 // List-row stop names: the row fits ~17 chars of Gothic-Bold 18 before the
 // watch ellipsizes, and a dumb character cap ("Mansell St & San") spends
@@ -422,7 +529,15 @@ function dirLinesSuffix(info) {
 // Mansell St" → "San Bruno & Mansell"); only then hard-cut. Phone-side
 // only — the watch renders the string verbatim, and a watch-side expansion
 // dictionary would cost bytecode = heap (playbook §B).
-var LIST_NAME_MAX = 20;
+// Char cap on a row's display name. It approximates what actually FITS the
+// row (~24 chars of Gothic-Bold 18 in 188 px) rather than being an arbitrary
+// bound, and that matters: compressStopName only abbreviates and drops street
+// types once the name EXCEEDS this, so a cap set far above the real width
+// would stop compressing and let the watch ellipsize instead — turning
+// "San Bruno & Wayland" into the strictly worse "San Bruno Ave & Wayl…".
+// Raised 20 -> 24 on 2026-07-14: the direction token spends 3 of these, and
+// letters are what make a stop recognizable.
+var LIST_NAME_MAX = 24;
 var STREET_TYPES = [
   ["Street", "St"], ["Avenue", "Ave"], ["Boulevard", "Blvd"],
   ["Road", "Rd"], ["Drive", "Dr"], ["Court", "Ct"], ["Place", "Pl"],
@@ -440,18 +555,55 @@ var ABBREV_RES = STREET_TYPES.map(function (t) {
 var TYPE_SUFFIX_RE = new RegExp(
   " (" + STREET_TYPES.map(function (t) { return t[1]; }).join("|") + ")$"
 );
-function compressStopName(name) {
+function compressStopName(name, max) {
+  max = max || LIST_NAME_MAX;
   var out = String(name);
   ABBREV_RES.forEach(function (r) { out = out.replace(r[0], r[1]); });
-  if (out.length > LIST_NAME_MAX) {
+  if (out.length > max) {
     out = out.split(" & ").map(function (part) {
       return part.replace(TYPE_SUFFIX_RE, "");
     }).join(" & ");
   }
-  if (out.length > LIST_NAME_MAX) {
-    out = out.slice(0, LIST_NAME_MAX).replace(/[ &,]+$/, "");
+  if (out.length > max) {
+    var cut = out.slice(0, max);
+    var sp = cut.lastIndexOf(" ");
+    // Drop a dangling STUB of a word ("12th St / Oakland Ci" -> "… Oakland"),
+    // but never a real fragment. A longer fragment is still doing the work of
+    // telling two stops apart: "San Bruno Ave & Wayland St" and "San Bruno Ave
+    // & Thornton Ave" cut to "San Bruno & Wayla" and "San Bruno & Thorn",
+    // whereas rounding both back to a word boundary collapses them BOTH to
+    // "San Bruno" — one useless label on two different stops, 70 m apart.
+    if (sp > 0 && cut.length - sp - 1 <= 2) cut = cut.slice(0, sp);
+    out = cut.replace(/[ &,/]+$/, "");
   }
   return out;
+}
+
+// The display name for a stop: the compressed name, then " — " and the
+// single-letter direction. This is the ONE place a stop's label is composed —
+// the watch list, the favorite records the phone stores, and the Clay settings
+// page all show whatever comes out of here, which is why the token has to be
+// part of the name and not only the subtitle: the settings page shows no
+// subtitle at all, and two "Bayshore Caltrain St" toggles are unusable.
+//
+// The token gets its own reserved width instead of competing for the name's:
+// it is the difference between two real, distinct places, so it must survive
+// the cut that a long name would otherwise force on it.
+function stopLabel(rawName, info) {
+  var name = String(rawName);
+  var token = "";
+  var m = BOUND_RE.exec(name); // Caltrain says it in the name…
+  if (m) {
+    token = BOUND_TOKEN[m[1].toUpperCase()];
+    name = name.slice(0, m.index) + name.slice(m.index + m[0].length);
+  }
+  name = name.replace(AGENCY_FILLER_RE, "");
+  if (!token) token = dirToken(info); // …everyone else, in the live feed
+  var budget = token
+    ? LIST_NAME_MAX - token.length - TOKEN_SEP.length
+    : LIST_NAME_MAX;
+  var out = compressStopName(name, budget);
+  return token ? out + TOKEN_SEP + token : out;
 }
 
 // Build the display-ready rows list the watch renders verbatim: favorites
@@ -469,17 +621,22 @@ function compressStopName(name) {
 // Caltrain, the same reach the nearby search now gives them
 // (getFavoriteStatus flags them far:1) — are left out entirely: no payload
 // bytes, no arrival-check API calls (they reappear when you get closer, and
-// stay editable on the settings page). Subtitles carry the stop's direction
-// and serving lines from the cached agency-wide stop-info map. All
-// formatting lives here because watch code costs watch heap (playbook §B).
+// stay editable on the settings page) — but they are NOT suppressed from the
+// nearby block, or a station starred from a deep "load more" page would have
+// no row at all. Names carry the direction token (stopLabel) and subtitles the
+// serving lines (dirLinesSuffix, which spells the direction out again), both
+// from the cached agency-wide stop-info map.
+// All formatting lives here because watch code costs watch heap (playbook §B).
 function buildRows(req, lat, lon, settings) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
     // Hidden favorites cost nothing: no status lookups, no payload, no spot
     // in the favorites block. Their stop can still show up as an ordinary
-    // unstarred nearby row when physically close (favKeys below uses only
-    // visible favorites) — starring it there unhides it.
-    var favs = loadFavs().filter(function (f) { return !f.hide; });
+    // unstarred nearby row when physically close (only the favorites we
+    // actually emit are suppressed from the nearby block, and a hidden one
+    // never gets that far) — starring it there unhides it.
+    var allFavs = loadFavs(); // the records themselves — see the repair below
+    var favs = allFavs.filter(function (f) { return !f.hide; });
     var hideM = (Number(settings.hideFavKm) || 19) * 1000;
 
     var assemble = function (favStatus, infoByAgency) {
@@ -491,6 +648,24 @@ function buildRows(req, lat, lon, settings) {
         status[f.agency + ":" + f.code] = f;
       });
 
+      // Favorite records heal here rather than needing to be re-starred:
+      //
+      //   code — a BART favorite may point at a stop code that no longer
+      //          exists: a PLATFORM id (901801), or a bare STATION id from the
+      //          brief spell when stations were undirected (901809). Both now
+      //          live under a station-direction code. getFavoriteStatus returns
+      //          the station as `canonBase`; the DIRECTION is only knowable
+      //          from live data, so it is resolved here, off the stop-info map,
+      //          which keys the retired platform ids for exactly this purpose.
+      //          Left alone the record resolves to nothing and its arrivals
+      //          come back empty forever.
+      //   name — what the settings page shows, and it was whatever compressed
+      //          string the watch happened to send at the time. Records
+      //          written before stopLabel existed read "Bayshore Caltrain St"
+      //          twice over, with nothing to tell the two platforms apart.
+      var favsRepaired = false;
+      var emitted = {}; // agency:code already in the favorites block
+
       var favRows = [];
       favs.forEach(function (f) {
         var st = status[f.agency + ":" + f.code];
@@ -498,16 +673,39 @@ function buildRows(req, lat, lon, settings) {
         // Beyond the hide line — per-agency: BART/Caltrain favorites reach
         // hideFavKm × railRadiusX (getFavoriteStatus computes the flag).
         if (st && st.far) return;
+        if (st && st.canonBase) {
+          // Which way was this stop? The retired platform's own live entry
+          // says so. A platform serving both directions (Bay Fair, Coliseum)
+          // takes the first — those two records were indistinguishable
+          // duplicates anyway, which is what started all this; dedupeFavs
+          // merges them. Nothing running at all (deep night) falls back to N.
+          var old = infoFor(f.agency, f.code);
+          var dir = (old && old.dirs.length && old.dirs[0]) || "N";
+          f.code = st.canonBase + "-" + dir; // shared object — allFavs sees it
+          favsRepaired = true;
+        }
+        // Two records can land on one stop the moment a migration merges them
+        // (both Balboa Park platforms -> the station). Emit the row once; the
+        // redundant record is dropped from storage by dedupeFavs below.
+        var favKey = f.agency + ":" + f.code;
+        if (emitted[favKey]) return;
+        emitted[favKey] = 1;
         // hasArr is a boolean from the stop-info map (false = checked, nothing
         // arriving; undefined = not checked, e.g. beyond the hide line — leave
         // those undimmed). It used to be 0/1, hence the earlier `=== 0`.
         var noArr = !!st && st.hasArr === false;
+        var info = infoFor(f.agency, f.code);
+        var label = st && st.name ? stopLabel(st.name, info) : String(f.name);
+        if (st && st.name && f.name !== label) {
+          f.name = label;
+          favsRepaired = true;
+        }
         var row = {
           a: f.agency, c: f.code,
-          n: compressStopName((st && st.name) || f.name),
+          n: label,
           s: f.agency +
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
-            (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(f.agency, f.code))),
+            (noArr ? " · no arrivals" : dirLinesSuffix(info)),
           f: 1,
           // Rank (not display) distance: getFavoriteStatus divides BART/
           // Caltrain by railRadiusX, so a starred station sorts among the
@@ -523,23 +721,38 @@ function buildRows(req, lat, lon, settings) {
       // the whole payload budget and crashed the watch.
       if (favRows.length > FAV_ROWS_MAX) favRows.length = FAV_ROWS_MAX;
 
-      var favKeys = {};
-      favs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
+      // Suppress from the nearby block exactly the favorites that made the
+      // favorites block — `emitted`, keyed by the codes as they now stand
+      // (the loop above may have migrated them). Rebuilding this set from
+      // `favs` here would look up `status` under the NEW code and miss, since
+      // getFavoriteStatus keyed it by the old one.
+      //
+      // A favorite past the hide line (far:1) is not in `emitted`, and that is
+      // the point: dropping it from the favorites block AND filtering it out
+      // here made it vanish from the list ENTIRELY, starred and unstarred
+      // alike, so a station starred from a deep "load more" page could never
+      // be reached again from the watch. Those fall through as ordinary rows.
       var rows = favRows.map(function (r) { delete r._d; return r; });
       stops.forEach(function (s) {
-        if (favKeys[s.agency + ":" + s.code]) return;
+        if (emitted[s.agency + ":" + s.code]) return;
         // Same serviceless signal as favorites: agency map loaded but the
         // stop is absent = checked, nothing arriving (map missing entirely =
         // unchecked, leave undimmed).
         var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
         var row = {
-          a: s.agency, c: s.code, n: compressStopName(s.name),
+          a: s.agency, c: s.code,
+          n: stopLabel(s.name, infoFor(s.agency, s.code)),
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
         };
         if (noArr) row.m = 1;
         rows.push(row);
       });
+
+      // Codes and names healed above; drop any records the code migration just
+      // merged onto one stop, and persist. The rows cache is written from this
+      // same build, so it and the favorites list stay in step.
+      if (favsRepaired) saveFavs(dedupeFavs(allFavs));
 
       // The watch renders 14 rows at most — anything past that is bytes
       // the budget shed would spend compute on and the stale cache would
@@ -608,9 +821,26 @@ function buildMoreRows(req, lat, lon, settings) {
     loadFavs().filter(function (f) { return !f.hide; })
       .forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
 
+    // A favorite is skipped here only if page 0 is actually showing it in the
+    // favorites block — i.e. it is inside the hide line. buildRows drops
+    // favorites past that line (getFavoriteStatus's far:1), and this search is
+    // deliberately wide (MORE_RADIUS_M doubles per page, out to 200 km), so
+    // skipping every favorite made a far one — a Caltrain station starred from
+    // a deep page, beyond the 19 km hideFavKm default — invisible in BOTH
+    // blocks, with no way back to it from the watch.
+    //
+    // `eff` is the rank distance (real distance ÷ the agency's rail scale),
+    // and getFavoriteStatus's far test divides by that same scale, so
+    // `eff > hideM` is exactly its far:1 — no rail knowledge leaks over the
+    // provider boundary here.
+    var hideM = (Number(settings.hideFavKm) || 19) * 1000;
+    var shownAsFav = function (s) {
+      return !!favKeys[s.agency + ":" + s.code] && s.eff <= hideM;
+    };
+
     var agSet = {};
     stops.forEach(function (s) {
-      if (!favKeys[s.agency + ":" + s.code]) agSet[s.agency] = 1;
+      if (!shownAsFav(s)) agSet[s.agency] = 1;
     });
     var infoByAgency = {};
     var list = Object.keys(agSet);
@@ -622,15 +852,23 @@ function buildMoreRows(req, lat, lon, settings) {
       };
       var rows = [];
       stops.forEach(function (s) {
-        if (favKeys[s.agency + ":" + s.code]) return; // favorites already shown
+        if (shownAsFav(s)) return; // already in page 0's favorites block
         // Same serviceless dimming as buildRows: in-map = something coming.
         var noArr = !!infoByAgency[s.agency] && !infoFor(s.agency, s.code);
         var row = {
-          a: s.agency, c: s.code, n: compressStopName(s.name),
+          a: s.agency, c: s.code,
+          n: stopLabel(s.name, infoFor(s.agency, s.code)),
           s: s.agency + (s.dist !== undefined ? " · " + formatDistM(s.dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
         };
         if (noArr) row.m = 1;
+        // A starred stop that reaches you on a load-more page — one past the
+        // hide line, so it never made the favorites block — is still a
+        // favorite, and must still wear its star. It stays part of THIS list
+        // for pagination: `off` counts what the phone has handed over, and the
+        // watch advances its cursor by the rows it receives, so a star here
+        // costs the accounting nothing (main.js fetchMore).
+        if (favKeys[s.agency + ":" + s.code]) row.f = 1;
         rows.push(row);
       });
       rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
@@ -723,28 +961,40 @@ function handleRequest(req) {
       respond(req.id, { type: "arrivals", stop: req.stop, arrivals: arrivals });
     });
   } else if (req.cmd === "fav") {
-    // The watch's Select toggles VISIBILITY, never deletes: unfavoriting
-    // hides the saved record (star it again — even via its unstarred
-    // nearby row — and it comes back). Deletion is settings-page only
-    // (trash toggles + confirmation).
+    // The watch's Select sets VISIBILITY, never deletes: unfavoriting hides
+    // the saved record (star it again — even via its unstarred nearby row —
+    // and it comes back). Deletion is settings-page only (trash toggles +
+    // confirmation).
+    //
+    // req.w is the state the watch is asking FOR (1 favorite, 0 unfavorite),
+    // applied idempotently. It used to be a blind flip of whatever we had
+    // stored, which meant a watch showing a stale `f` flag would unstar the
+    // stop the user was trying to star. Older watch builds send no `w`; fall
+    // back to the flip for them.
     var favs = loadFavs();
     var key = String(req.a) + ":" + String(req.c);
     var fav = null;
     for (var i = 0; i < favs.length; i++) {
       if (favs[i].agency + ":" + favs[i].code === key) { fav = favs[i]; break; }
     }
-    var nowFav;
+    var nowFav = req.w === undefined
+      ? (fav && !fav.hide ? 0 : 1) // legacy watch: flip
+      : (req.w ? 1 : 0);
     if (!fav) {
-      favs.unshift({ agency: String(req.a), code: String(req.c), name: String(req.n || req.c) });
-      nowFav = 1;
-    } else if (fav.hide) {
+      // Unfavoriting something we've never stored is already true — don't
+      // create a record just to mark it hidden.
+      if (nowFav) {
+        favs.unshift({
+          agency: String(req.a), code: String(req.c), name: String(req.n || req.c)
+        });
+      }
+    } else if (nowFav) {
       delete fav.hide;
-      nowFav = 1;
     } else {
       fav.hide = 1;
-      nowFav = 0;
     }
     saveFavs(favs);
+    clearRowsCache(); // the cached rows carry the old star flags
     respond(req.id, { type: "fav", fav: nowFav });
   } else {
     respond(req.id, { type: "error", message: "unknown cmd " + req.cmd });
@@ -753,8 +1003,28 @@ function handleRequest(req) {
 
 /* ---------------------------------------------------------------- wiring */
 
+// The stop cache is versioned on the SHAPE of a stop code, and that shape has
+// changed twice (transit511 STOP_CACHE_PREFIX) — stranding a v1 and a v2 list
+// per agency. They are by far the biggest thing this app stores (Muni alone is
+// 3,000-odd stops), and saveStopCache swallows a quota failure with nothing but
+// a log line, so leaving dead generations behind risks silently losing the
+// cache we actually use and re-downloading every stop list on every request.
+// Cheap to sweep, once per launch.
+var DEAD_STOP_CACHE_PREFIXES = ["stops511.v1.", "stops511.v2."];
+function dropStaleStopCaches() {
+  var agencies = loadSettings().agencies.concat(TOGGLED_AGENCIES);
+  agencies.forEach(function (ag) {
+    DEAD_STOP_CACHE_PREFIXES.forEach(function (prefix) {
+      try {
+        localStorage.removeItem(prefix + ag);
+      } catch (e) { /* nothing to do */ }
+    });
+  });
+}
+
 Pebble.addEventListener("ready", function () {
   console.log("Transit Glance PKJS ready");
+  dropStaleStopCaches();
   // The watch usually boots before this JS is listening, so its first
   // nearby request can vanish and time out. SettingsChanged doubles as a
   // "phone is ready" ping — the watch responds by re-running its nearby
