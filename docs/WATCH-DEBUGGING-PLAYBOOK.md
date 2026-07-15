@@ -245,17 +245,30 @@ established on real hardware in this repo:
     Motivation was the offline countdown feature: releasing at request time
     discarded the arrivals before a failed refresh could fall back to them,
     so an offline refresh blanked to "Error". Now `fetchArrivals()` keeps
-    `state.refreshing` (the `draw()` self-gate stays — the screen still
-    freezes for the round trip) but no longer clears `state.arrivals`;
-    `protocol.onBeforeParse(raw)` releases them **only when `raw` contains
-    `"type":"arrivals"`** (a real data response about to spike the heap),
-    keyed off `state.refreshing`. An error/timeout carries no big parse, so
-    its arrivals survive and `fetchArrivals().catch` ticks them down. Peak
-    coexistence on the success path is unchanged (arrivals freed the instant
-    before the parse); the only new steady-state weight is `a.whenMs` per
-    arrival. Invariant unchanged: **free the old data before the new data is
-    parsed**; the release just moved to the moment of arrival so a
+    `state.refreshing` only as an in-flight/busy marker and no longer clears
+    `state.arrivals`; `protocol.onBeforeParse(raw)` releases them **only when
+    `raw` contains `"type":"arrivals"`** (a real data response about to spike
+    the heap), keyed off `state.refreshing`. An error/timeout carries no big
+    parse, so its arrivals survive and `fetchArrivals().catch` ticks them down.
+    Peak coexistence on the success path is unchanged (arrivals freed the
+    instant before the parse); the only new steady-state weight is `a.whenMs`
+    per arrival. Invariant unchanged: **free the old data before the new data
+    is parsed**; the release just moved to the moment of arrival so a
     no-big-parse failure can keep it.
+  - *Addendum 2 (2026-07-15): the arrivals `draw()` self-gate was removed
+    entirely.* The freeze was never a memory defense — the onBeforeParse
+    release is — it only suppressed painting, and it **hid the arrivals for
+    the whole 15 s `REQUEST_TIMEOUT_MS`** whenever the phone link was down
+    (Bluetooth off), which read as a frozen app. The screen now stays live and
+    ticking through the round trip like the list (a `…` header is the only
+    cue), and an `OFFLINE_FALLBACK_MS` (4 s) timer surfaces the offline
+    countdown without waiting out the timeout. This is **link-state-agnostic**:
+    `watch.connected.app`/`.pebblekit` did **not** reliably flip on a
+    Bluetooth-off drop on this hardware (two guard attempts failed on device),
+    so detection was abandoned for a time bound. Reconnect is handled by a
+    `watch.addEventListener("connected", …)` re-fetch (nothing re-fetched
+    before, so a reconnect needed an app restart). Memory model still unchanged
+    — release-before-parse holds; only the vestigial paint-gate is gone.
 - **Eleventh recurrence (2026-07-10, night, captured twice): the stale-
   list revalidation raced the user’s navigation — crash ~1 s after
   launch whenever the user selected a stop quickly, regardless of the
