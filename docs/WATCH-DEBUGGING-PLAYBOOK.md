@@ -217,7 +217,7 @@ established on real hardware in this repo:
   rows there. The list stays live and scrollable for the whole round trip;
   peak coexistence is rows + the ≤880 B wire string, which was never the
   crash point — the crash was always the parse spike beside retained rows.
-  The ARRIVALS screen keeps the request-time frame-hold.) Lessons: (1)
+  The ARRIVALS screen kept the request-time frame-hold until 2026-07-14, when it too moved to release-before-parse — see the tenth-recurrence addendum below.) Lessons: (1)
   budget ~2× the
   wire size in free chunk for any watch-side JSON parse, and if that isn’t
   reliably available, **free the old data before the new data arrives**
@@ -240,6 +240,22 @@ established on real hardware in this repo:
   when a memory defense is added to one screen, **grep for the sibling
   screen with the same data flow before the user finds it** — every
   request/response surface needs the same release-before-parse shape.
+  - *Addendum (2026-07-14): arrivals moved from release-before-**request**
+    to release-before-**parse**, matching the list (ninth recurrence).*
+    Motivation was the offline countdown feature: releasing at request time
+    discarded the arrivals before a failed refresh could fall back to them,
+    so an offline refresh blanked to "Error". Now `fetchArrivals()` keeps
+    `state.refreshing` (the `draw()` self-gate stays — the screen still
+    freezes for the round trip) but no longer clears `state.arrivals`;
+    `protocol.onBeforeParse(raw)` releases them **only when `raw` contains
+    `"type":"arrivals"`** (a real data response about to spike the heap),
+    keyed off `state.refreshing`. An error/timeout carries no big parse, so
+    its arrivals survive and `fetchArrivals().catch` ticks them down. Peak
+    coexistence on the success path is unchanged (arrivals freed the instant
+    before the parse); the only new steady-state weight is `a.whenMs` per
+    arrival. Invariant unchanged: **free the old data before the new data is
+    parsed**; the release just moved to the moment of arrival so a
+    no-big-parse failure can keep it.
 - **Eleventh recurrence (2026-07-10, night, captured twice): the stale-
   list revalidation raced the user’s navigation — crash ~1 s after
   launch whenever the user selected a stop quickly, regardless of the

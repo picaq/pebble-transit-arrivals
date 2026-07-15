@@ -203,6 +203,12 @@ const HEADER_BUSY_W = render.getTextWidth("…", fontHeader) + 4;
 const HEADER_TEXT_W = render.width - 2 * HEADER_PAD - HEADER_BUSY_W;
 const HINT_IS_FAV = "★ hold Select to unfavorite";
 const HINT_NOT_FAV = "Select to ★ favorite";
+// Footer while the arrivals shown are last-known (a refresh could not reach the
+// network) — the minutes keep counting down offline (tickArrivals), and this
+// tells the rider they are estimated and how stale. The age is appended per
+// tick (see buildOfflineText), so the whole string is precomputed off the draw
+// path. DIR_SEP is the same " · " the list uses.
+const OFFLINE_PREFIX = "Offline" + DIR_SEP + "updated ";
 // Unfavoriting requires HOLDING Select this long (favoriting stays a tap —
 // it's harmless and reversible; accidental unfavorites are what stung).
 // Fires AT the threshold, mid-hold, via a timer — the footer flips while
@@ -223,7 +229,18 @@ const state = {
   stop: null,                 // stop shown on the ARRIVALS screen
   stopTitle: undefined,       // ARRIVALS header text; undefined = needs fitting
   stopIsFav: false,           // cached — reading favorites re-parses JSON, keep out of draw()
-  arrivals: [],               // [{line, dest, min, + display fields fitted in draw()}]
+  arrivals: [],               // [{line, dest, min, whenMs, + display fields fitted in draw()}]
+  arrivalsAt: 0,              // Date.now() when the shown arrivals were fetched —
+                              // the anchor the offline countdown ticks against.
+                              // Each arrival carries a.whenMs (absolute due time
+                              // reconstructed from its min at fetch), so the
+                              // displayed minute is always round((whenMs-now)/60s):
+                              // second-accurate, never drifting a whole minute.
+  offline: false,            // showing last-known arrivals (a refresh could not
+                              // reach the network) — footers/redraw reflect it,
+                              // cleared by the next successful fetch
+  offlineText: "",           // precomputed "Offline · updated Nm ago" footer
+                              // (built in tickArrivals, off the draw path)
   arrTop: 0,                   // first visible arrival (scroll window)
   arrLimit: ARR_DEFAULT,       // how many arrivals we ask the phone for
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
@@ -506,6 +523,16 @@ function draw() {
           if (a.min % 10 === 1) a.minX += 2;
           a.lineText = ellipsize(a.line, fontLine, ARRIVAL_TEXT_W);
           a.destText = ellipsize(a.dest, fontSub, ARRIVAL_TEXT_W);
+          a.minDirty = false;
+        } else if (a.minDirty) {
+          // Countdown ticked (tickArrivals): only the minute changed, so
+          // recompute just its right-alignment in-frame — a width measure that
+          // must stay inside begin()/end() (playbook §F) — without re-fitting
+          // the unchanged line/dest strings.
+          a.minX = ARRIVAL_MIN_EDGE - render.getTextWidth(a.minStr, a.minFont);
+          if (a.minFont === fontNarrow) a.minX += 1;
+          if (a.min % 10 === 1) a.minX += 2;
+          a.minDirty = false;
         }
         if (a.min <= 0) {
           // Kerned split draw + stroke-completing sliver; see the NOW_*
@@ -522,8 +549,12 @@ function draw() {
         y += ARRIVAL_ROW_H;
       }
     }
-    // Footer hint: favorite state (cached — never read storage from draw())
-    if (state.stop) {
+    // Footer: while showing last-known arrivals offline, say so and how stale
+    // (state.offlineText, precomputed in tickArrivals); otherwise the favorite
+    // hint. Both cached — draw() never allocates or reads storage.
+    if (state.offline) {
+      render.drawText(state.offlineText, fontSub, GRAY, 6, render.height - 18);
+    } else if (state.stop) {
       render.drawText(state.stopIsFav ? HINT_IS_FAV : HINT_NOT_FAV,
                       fontSub, GRAY, 6, render.height - 18);
     }
@@ -581,12 +612,24 @@ function updateClock() {
   if (h === 0) h = 12;
   state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
   state.timeDirty = true;
+  // Same minute boundary drives the arrivals countdown: tick the displayed
+  // minutes down against their absolute due times (offline or between the 60 s
+  // server refreshes alike). Allocation stays gated to the real minute change
+  // this function already guards. Skip during a frame-hold — the pending
+  // response is about to repaint from fresh (or ticked) data anyway. draw()
+  // below repaints both clock and arrivals at once.
+  if (state.mode === MODE_ARRIVALS && !state.refreshing) tickArrivals();
   draw(); // no-ops during a frame-hold (gate inside draw)
 }
 
 // Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
+// Anchors each arrival to an absolute due time so the countdown can tick offline
+// (see tickArrivals). state.arrivalsAt must be stamped BEFORE this runs — the
+// phone's `min` is relative to when it served, i.e. ~now, so whenMs reconstructs
+// the same absolute instant the phone computed it from (serveArrivals, phone).
 function prepareArrivals(list) {
   for (const a of list) {
+    a.whenMs = state.arrivalsAt + a.min * 60000;
     a.minStr = a.min <= 0 ? "Now" : String(a.min);
     // The phone does not cap `min`, so infrequent/late-night service really
     // does send 100+; three Leco-Bold 26 digits run into the route text.
@@ -594,6 +637,54 @@ function prepareArrivals(list) {
     a.lineColor = (a.k && LINE_COLOR_CODES[a.k]) || colorForLine(a.line);
   }
   return list;
+}
+
+// Re-derive each arrival's displayed minute from its absolute due time and the
+// current clock, dropping ones now gone. This is the OFFLINE COUNTDOWN: it needs
+// no network — the minutes tick down against whenMs whether or not the next
+// refresh reaches the phone. Runs on the wall-clock minute boundary (piggybacked
+// on updateClock, so it allocates only when the clock does) and immediately when
+// a refresh fails. Mirrors the phone's serveArrivals so cached/offline minutes
+// match what a live fetch would have shown. Does NOT touch line/dest text —
+// only the minutes change, so a.minDirty asks draw() to recompute a.minX
+// in-frame (width measurement must stay inside begin()/end(), playbook §F)
+// without re-ellipsizing the unchanged strings.
+function tickArrivals() {
+  if (!state.arrivals.length) return;
+  const now = Date.now();
+  for (let i = state.arrivals.length - 1; i >= 0; i--) {
+    const a = state.arrivals[i];
+    const ms = a.whenMs - now;
+    if (ms < -60000) {            // already gone — same threshold as serveArrivals
+      state.arrivals.splice(i, 1);
+      continue;
+    }
+    const m = Math.max(0, Math.round(ms / 60000));
+    if (m !== a.min) {
+      a.min = m;
+      a.minStr = m <= 0 ? "Now" : String(m);
+      a.minFont = (m <= 0 || m > 99) ? fontNarrow : fontBig;
+      a.minDirty = true;          // draw() recomputes a.minX in-frame
+    }
+  }
+  // A refresh that reordered by min happens on the phone; a pure tick-down keeps
+  // the existing order (waits only shrink), so no re-sort is needed here.
+  if (state.arrivals.length) {
+    if (state.arrTop >= state.arrivals.length) state.arrTop = 0;
+  } else {
+    // Everything aged out between refreshes. Offline that means the last-known
+    // data is spent ("No live data"); online it is a transient gap the next
+    // 60 s refresh fills, but avoid drawing a blank body meanwhile.
+    state.arrivalsStatus = state.offline ? "No live data" : "No arrivals";
+  }
+  if (state.offline) buildOfflineText(now);
+}
+
+// Precompute the "Offline · updated Nm ago" footer (draw() never allocates).
+// Age is whole minutes since the shown data was fetched.
+function buildOfflineText(now) {
+  const ageMin = Math.max(0, Math.floor((now - state.arrivalsAt) / 60000));
+  state.offlineText = OFFLINE_PREFIX + ageMin + "m ago";
 }
 
 /* ------------------------------------------------------------- data flow */
@@ -650,21 +741,33 @@ function fetchNearby(fresh) {
     });
 }
 
-// Last-moment rows release (see fetchNearby): fires when a response has
-// ARRIVED, synchronously before protocol.js parses it. Requests are
-// serialized, so while listRefreshing is set the next response is normally
-// the list's own — releasing here frees the ~1.2 KB+ the parse needs
-// (playbook §B, ninth recurrence) while the framebuffer keeps showing the
-// old rows for the few ms until the .then handler repaints. (If the list
-// request queued behind an abandoned earlier cycle, this fires on that
-// response instead — releasing a round trip early is memory-safe and the
-// rows rebuild when the list response lands right after.)
-protocol.onBeforeParse = () => {
+// Last-moment display-data release (see fetchNearby / fetchArrivals): fires
+// when a response has ARRIVED, synchronously before protocol.js parses it.
+// Requests are serialized, so while a *Refreshing flag is set the next response
+// is normally that screen's own — releasing here frees the chunk the parse
+// needs (a rows parse needs >1.2 KB, playbook §B ninth recurrence) while the
+// framebuffer keeps showing the old data for the few ms until the .then handler
+// repaints. (If the request queued behind an abandoned earlier cycle, this
+// fires on that response instead — releasing a round trip early is memory-safe
+// and the data rebuilds when the real response lands right after.)
+//
+// `raw` is the unparsed response string. The ARRIVALS release is conditional on
+// it: only a real data response (`"type":"arrivals"`) is about to spike the
+// heap, so only then do we drop the arrivals. An error/timeout carries no big
+// parse, so its arrivals are KEPT for the offline countdown (fetchArrivals'
+// .catch ticks them down). None of the fixed phone error strings ("Network
+// error", "511 timeout", "Bad API key", "Rate limited", "No phone location",
+// "Unexpected 511 response", "HTTP nnn") contain that token, and indexOf
+// allocates nothing.
+protocol.onBeforeParse = (raw) => {
   if (state.listRefreshing) {
     state.rows = [];
     state.sel = 0;
     state.top = 0;
     state.status = "Refreshing…"; // insurance if a draw slips in
+  } else if (state.refreshing && raw.indexOf('"type":"arrivals"') !== -1) {
+    state.arrivals = [];
+    state.arrivalsStatus = "Refreshing…"; // insurance if a draw slips in
   }
 };
 
@@ -739,6 +842,7 @@ function openArrivals(stop) {
     row.subtitle = undefined;
   }
   state.arrivals = [];
+  state.offline = false;          // fresh stop — no stale data carried over
   state.arrTop = 0;               // top of the scroll window for this stop
   state.arrLimit = ARR_DEFAULT;   // reset "load more" growth per stop
   // Reset the guard so a still-in-flight request for a previous stop can't
@@ -772,20 +876,29 @@ function fetchArrivals() {
     // Frame-hold, arrivals flavor (playbook §B, tenth recurrence): a 10-
     // arrival response parses beside the retained current list otherwise —
     // the same >1.6 KB-spike-beside-retained-data arithmetic that crashed
-    // the list screen. Release before requesting; pixels stay up. Covers
-    // manual refresh, "load more", and the 60 s auto-refresh alike.
+    // the list screen. Freeze the frame (state.refreshing gates draw()) and
+    // show the "…" header; the arrivals stay LIVE through the round trip so a
+    // FAILED refresh can keep counting them down offline. They are released
+    // just-in-time in protocol.onBeforeParse — but ONLY when a real data
+    // response is about to be parsed, so an error/timeout (no big parse)
+    // leaves them intact. Covers manual refresh, "load more", and the 60 s
+    // auto-refresh alike. (This mirrors the LIST screen's live-through-the-
+    // round-trip + release-in-onBeforeParse model, which is proven safe.)
     state.refreshing = true;
     state.arrivalsStatus = "Refreshing…"; // insurance if a draw slips in
     // stopTitle is fitted by the first draw() of this screen, which always
     // precedes a refresh; fall back rather than drawText(undefined) if not.
     drawHeaderBusy(state.stopTitle || "Arrivals");
-    state.arrivals = [];
   }
   protocol.arrivals(requested.agency, requested.code, state.arrLimit)
     .then(resp => {
       state.arrivalsPending = false;
       state.refreshing = false; // release the hold before any early return
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
+      // Live data landed — stamp the anchor BEFORE prepareArrivals (it derives
+      // each arrival's whenMs from arrivalsAt) and clear any offline state.
+      state.arrivalsAt = Date.now();
+      state.offline = false;
       state.arrivals = prepareArrivals(resp.arrivals || []);
       // Keep the scroll window valid if a refresh returned fewer rows.
       if (state.arrTop >= state.arrivals.length) state.arrTop = 0;
@@ -796,7 +909,16 @@ function fetchArrivals() {
       state.arrivalsPending = false;
       state.refreshing = false; // release the hold before any early return
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
-      if (!state.arrivals.length) {
+      if (state.arrivals.length) {
+        // OFFLINE COUNTDOWN: the refresh (manual or auto) could not reach the
+        // network, but onBeforeParse kept the last-known arrivals. Don't error
+        // — mark offline and tick the minutes down against their absolute due
+        // times right now (don't wait for the next minute boundary).
+        state.offline = true;
+        tickArrivals();
+        draw();
+      } else {
+        // Nothing to fall back to (first fetch of this stop failed offline).
         state.arrivalsStatus = "Error: " + err.message;
         draw();
       }
@@ -837,6 +959,7 @@ function closeArrivals() {
   state.mode = MODE_LIST;
   state.stop = null;
   state.arrivals = [];
+  state.offline = false;          // leaving the arrivals screen clears the flag
   // Back during an arrivals frame-hold: the hold belongs to the screen we
   // are leaving — clear it or this draw() (and every one after) no-ops.
   // The abandoned request's late response is ignored by its identity check.
