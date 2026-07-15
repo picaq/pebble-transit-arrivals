@@ -158,6 +158,13 @@ const REFRESH_COOLDOWN_MS = 3000;
 // eleventh recurrence). Deferred, it runs through the frame-hold refresh
 // path instead, and only when the list screen is idle.
 const REVALIDATE_DELAY_MS = 5000;
+// How long an arrivals refresh may be in flight before the screen falls back to
+// the offline countdown (last-known minutes, ticking) instead of waiting out the
+// 15 s REQUEST_TIMEOUT_MS. Link-state-agnostic: it just bounds the wait, so a
+// Bluetooth-off drop (which does not reliably flip watch.connected.*) surfaces
+// offline in a few seconds. The request stays in flight — if it still succeeds,
+// live data replaces the estimate. Comfortably above a warm round trip (~1–2 s).
+const OFFLINE_FALLBACK_MS = 4000;
 
 // draw() must stay ALLOCATION-FREE (docs/WATCH-DEBUGGING-PLAYBOOK.md §B):
 // string churn in the render path fragments this watch's tiny heap until an
@@ -241,6 +248,9 @@ const state = {
                               // cleared by the next successful fetch
   offlineText: "",           // precomputed "Offline · updated Nm ago" footer
                               // (built in tickArrivals, off the draw path)
+  offlineFallbackTimer: null, // arrivals refresh in flight: fires at
+                              // OFFLINE_FALLBACK_MS to show the offline countdown
+                              // without waiting out the 15 s request timeout
   arrTop: 0,                   // first visible arrival (scroll window)
   arrLimit: ARR_DEFAULT,       // how many arrivals we ask the phone for
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
@@ -421,8 +431,9 @@ function ellipsize(str, font, maxWidth) {
 
 // Stamp the "…" refresh-pending indicator into the header band of the frame
 // already on screen (partial Poco update — everything outside the band is
-// untouched). Used when a refresh starts on either screen; during an
-// ARRIVALS frame-hold this is the ONLY paint that may run.
+// untouched). Used when a refresh starts on either screen, for an immediate
+// indicator without a full redraw; subsequent full repaints keep it by passing
+// the in-flight flag (state.listRefreshing / state.refreshing) to drawHeader().
 function drawHeaderBusy(title) {
   render.begin(0, 0, render.width, HEADER_H);
   drawHeader(title, true);
@@ -430,14 +441,14 @@ function drawHeaderBusy(title) {
 }
 
 function draw() {
-  // Frame-hold gate (playbook §B, tenth recurrence — ARRIVALS refreshes
-  // only; the list keeps its rows live and releases them in
-  // protocol.onBeforeParse instead): while an arrivals refresh is in flight
-  // the arrivals are RELEASED (that's what lets the response parse) and only
-  // the framebuffer still shows them — any repaint would blank the screen.
-  // Gating here covers every draw path at once; whoever clears
-  // state.refreshing must draw() the fresh data.
-  if (state.refreshing) return;
+  // No frame freeze: the arrivals screen keeps drawing (and ticking) through a
+  // refresh, exactly like the list. The old `if (state.refreshing) return;`
+  // hard-froze it for the whole round trip, which hid the arrivals for the full
+  // 15 s request timeout whenever the link was down. Memory safety does not need
+  // the freeze — the arrivals are released just before the parse in
+  // protocol.onBeforeParse (gated on state.refreshing), never retained beside a
+  // real parse (playbook §B, tenth recurrence). state.refreshing now only marks
+  // "arrivals request in flight" (drives that release and the "…" header).
   render.begin();
   render.fillRectangle(WHITE, 0, 0, render.width, render.height);
 
@@ -486,7 +497,9 @@ function draw() {
     if (state.stop && state.stopTitle === undefined) {
       state.stopTitle = ellipsize(state.stop.name, fontHeader, HEADER_TEXT_W);
     }
-    drawHeader(state.stop ? state.stopTitle : "Arrivals");
+    // Busy "…" while a refresh is in flight, so a full repaint (clock tick,
+    // scroll) during the round trip keeps the indicator drawHeaderBusy stamped.
+    drawHeader(state.stop ? state.stopTitle : "Arrivals", state.refreshing);
     if (!state.arrivals.length) {
       render.drawText(state.arrivalsStatus, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
@@ -613,13 +626,13 @@ function updateClock() {
   state.timeStr = h + ":" + (min < 10 ? "0" + min : min);
   state.timeDirty = true;
   // Same minute boundary drives the arrivals countdown: tick the displayed
-  // minutes down against their absolute due times (offline or between the 60 s
-  // server refreshes alike). Allocation stays gated to the real minute change
-  // this function already guards. Skip during a frame-hold — the pending
-  // response is about to repaint from fresh (or ticked) data anyway. draw()
-  // below repaints both clock and arrivals at once.
-  if (state.mode === MODE_ARRIVALS && !state.refreshing) tickArrivals();
-  draw(); // no-ops during a frame-hold (gate inside draw)
+  // minutes down against their absolute due times (offline, in flight, or
+  // between the 60 s server refreshes alike). Allocation stays gated to the real
+  // minute change this function already guards. draw() below repaints both clock
+  // and arrivals at once — the screen no longer freezes during a refresh, so the
+  // countdown keeps moving even while a request is out.
+  if (state.mode === MODE_ARRIVALS) tickArrivals();
+  draw();
 }
 
 // Cheap per-arrival display fields; text fitting happens in draw() (in-frame).
@@ -852,6 +865,10 @@ function openArrivals(stop) {
   // survive the transition (draw() would stay gated forever).
   state.arrivalsPending = false;
   state.refreshing = false;
+  if (state.offlineFallbackTimer) {
+    Timer.clear(state.offlineFallbackTimer);
+    state.offlineFallbackTimer = null;
+  }
   state.arrivalsStatus = "Loading…";
   draw();
   fetchArrivals();
@@ -873,27 +890,48 @@ function fetchArrivals() {
   state.arrivalsPending = true;
   const requested = state.stop;
   if (state.arrivals.length) {
-    // Frame-hold, arrivals flavor (playbook §B, tenth recurrence): a 10-
-    // arrival response parses beside the retained current list otherwise —
-    // the same >1.6 KB-spike-beside-retained-data arithmetic that crashed
-    // the list screen. Freeze the frame (state.refreshing gates draw()) and
-    // show the "…" header; the arrivals stay LIVE through the round trip so a
-    // FAILED refresh can keep counting them down offline. They are released
-    // just-in-time in protocol.onBeforeParse — but ONLY when a real data
-    // response is about to be parsed, so an error/timeout (no big parse)
-    // leaves them intact. Covers manual refresh, "load more", and the 60 s
-    // auto-refresh alike. (This mirrors the LIST screen's live-through-the-
-    // round-trip + release-in-onBeforeParse model, which is proven safe.)
+    // The arrivals stay LIVE through the round trip (they keep drawing and
+    // ticking) and are released only in protocol.onBeforeParse, right before a
+    // real data response is parsed — so a failed/offline refresh keeps them and
+    // counts them down (playbook §B, tenth recurrence; mirrors the LIST screen).
+    // state.refreshing is now just an in-flight/busy marker (draw() no longer
+    // freezes on it): it gates that onBeforeParse release and shows the "…"
+    // header. NOT a screen freeze — freezing here hid the arrivals for the whole
+    // 15 s request timeout whenever the link was down.
     state.refreshing = true;
-    state.arrivalsStatus = "Refreshing…"; // insurance if a draw slips in
+    state.arrivalsStatus = "Refreshing…"; // insurance if the list is empty
     // stopTitle is fitted by the first draw() of this screen, which always
     // precedes a refresh; fall back rather than drawText(undefined) if not.
     drawHeaderBusy(state.stopTitle || "Arrivals");
   }
+  // Bound the wait WITHOUT relying on a link-state flag (watch.connected.* proved
+  // unreliable for a Bluetooth-off drop): if the response hasn't landed in
+  // OFFLINE_FALLBACK_MS, stop waiting on the frozen "…" — show the last-known
+  // arrivals as an offline countdown (or, on a cold open with nothing to count
+  // down, "No phone connection"). The request stays in flight; if it still
+  // succeeds (e.g. the link recovers) .then replaces the estimate with live data.
+  if (state.offlineFallbackTimer) Timer.clear(state.offlineFallbackTimer);
+  state.offlineFallbackTimer = Timer.set(() => {
+    state.offlineFallbackTimer = null;
+    if (state.arrivalsPending && state.mode === MODE_ARRIVALS &&
+        state.stop === requested) {
+      if (state.arrivals.length) {
+        state.offline = true;
+        tickArrivals();
+      } else {
+        state.arrivalsStatus = "No phone connection";
+      }
+      draw();
+    }
+  }, OFFLINE_FALLBACK_MS);
   protocol.arrivals(requested.agency, requested.code, state.arrLimit)
     .then(resp => {
       state.arrivalsPending = false;
       state.refreshing = false; // release the hold before any early return
+      if (state.offlineFallbackTimer) {
+        Timer.clear(state.offlineFallbackTimer);
+        state.offlineFallbackTimer = null;
+      }
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       // Live data landed — stamp the anchor BEFORE prepareArrivals (it derives
       // each arrival's whenMs from arrivalsAt) and clear any offline state.
@@ -908,6 +946,10 @@ function fetchArrivals() {
     .catch(err => {
       state.arrivalsPending = false;
       state.refreshing = false; // release the hold before any early return
+      if (state.offlineFallbackTimer) {
+        Timer.clear(state.offlineFallbackTimer);
+        state.offlineFallbackTimer = null;
+      }
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
       if (state.arrivals.length) {
         // OFFLINE COUNTDOWN: the refresh (manual or auto) could not reach the
@@ -960,10 +1002,14 @@ function closeArrivals() {
   state.stop = null;
   state.arrivals = [];
   state.offline = false;          // leaving the arrivals screen clears the flag
-  // Back during an arrivals frame-hold: the hold belongs to the screen we
-  // are leaving — clear it or this draw() (and every one after) no-ops.
-  // The abandoned request's late response is ignored by its identity check.
+  // Clear the in-flight marker and the offline fallback for the screen we are
+  // leaving; an abandoned request's late response is ignored by its identity
+  // check, and its fallback must not fire against the list.
   state.refreshing = false;
+  if (state.offlineFallbackTimer) {
+    Timer.clear(state.offlineFallbackTimer);
+    state.offlineFallbackTimer = null;
+  }
   draw();
 }
 
@@ -1048,13 +1094,35 @@ new Button({
 
 /* ----------------------------------------------------------------- start */
 
-// Re-run nearby search when the phone-side settings change (e.g. the user
-// enabled another agency or entered an API key).
+// Re-fetch whatever screen is showing. Used by the settings-changed ping and by
+// the reconnect listener below.
+function refreshCurrent() {
+  if (state.mode === MODE_ARRIVALS) fetchArrivals();
+  else fetchNearby(false);
+}
+
+// Re-run the fetch when the phone-side settings change (e.g. the user enabled
+// another agency or entered an API key) — on either screen now, so a settings
+// change while viewing arrivals isn't ignored.
 protocol.onSettingsChanged = () => {
-  if (state.mode === MODE_LIST) fetchNearby(false);
+  refreshCurrent();
 };
 
-state.status = watch.connected.pebblekit ? "Connecting…" : "Waiting for phone…";
+// Re-fetch when the phone link is (re)established. A mid-session Bluetooth
+// reconnect otherwise left the running app showing stale data until it was
+// closed and reopened: nothing re-fetched (the list has no periodic refresh,
+// and pkjs doesn't reliably re-ping on reconnect). `watch` fires "connected" on
+// link changes (CLAUDE.md §2). Recover the current screen — but ONLY once a
+// session is under way (list loaded, or on the arrivals screen). At boot the
+// list is empty and the FIRST fetch must come from pkjs's settings-ping, not
+// from here: a watch-initiated fetch can beat pkjs's startup and vanish
+// (CLAUDE.md §6), and its in-flight guard would then swallow the ping's fetch.
+// On a disconnect event this fails gracefully into the offline countdown.
+watch.addEventListener("connected", () => {
+  if (state.mode === MODE_ARRIVALS || state.rows.length) refreshCurrent();
+});
+
+state.status = watch.connected.app ? "Connecting…" : "Waiting for phone…";
 draw();
 
 // Clock: tick the bottom-right time once a MINUTE via a Timer, aligned to the
