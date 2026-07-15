@@ -106,8 +106,11 @@ function handleResponse(raw) {
   // serialized, so main.js knows exactly which cycle this response answers
   // without parsing it. Nothing can draw between this call and the promise
   // handler (jobs run before the event loop turns), so the framebuffer
-  // keeps showing whatever the hook releases.
-  if (protocol.onBeforeParse) protocol.onBeforeParse();
+  // keeps showing whatever the hook releases. The raw (unparsed) string is
+  // passed so the hook can cheaply peek at the response *type* — the arrivals
+  // screen keeps its rows on an error/timeout (offline countdown) and only
+  // releases them for a real data response about to be parsed (see main.js).
+  if (protocol.onBeforeParse) protocol.onBeforeParse(raw);
   let data;
   try {
     data = JSON.parse(raw);
@@ -189,7 +192,10 @@ export const protocol = {
   /**
    * Optional hook: called synchronously just before a response is parsed,
    * so the caller can release retained display data ahead of the parse
-   * spike (see handleResponse).
+   * spike (see handleResponse). Receives the raw (unparsed) response string
+   * so the caller can peek at the response type without paying for a full
+   * parse — used to release the arrivals list only for real data and keep it
+   * on an error/timeout for the offline countdown.
    */
   onBeforeParse: null,
 
