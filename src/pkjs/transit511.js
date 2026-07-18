@@ -303,16 +303,18 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // list and the AppMessage payload bounded even in the densest area.
 var HARD_STOP_CEILING = 14;
 
-// Rail agencies that reach farther up the list: BART and Caltrain stations
-// are sparse and a train is worth walking farther for, so settings.railRadiusX
-// scales them two ways — their eligibility radius (the nearby search radius,
-// and the favorites hide line in getFavoriteStatus) is MULTIPLIED by it, and
-// the distance they are RANKED by is divided by it. At 5× a station 3 km out
-// sorts among the 600 m bus stops. Only reach and rank scale: the `dist` field
-// every caller displays stays the true distance. Rail knowledge lives here and
-// nowhere else — callers just sort by `eff` (see findNearbyStops).
-// BA = BART, CT = Caltrain.
-var RAIL_AGENCIES = { BA: 1, CT: 1 };
+// High-reach agencies that climb farther up the list: BART and Caltrain
+// stations — and ferry terminals — are sparse and one is worth walking farther
+// for, so settings.railRadiusX scales them two ways — their eligibility radius
+// (the nearby search radius, and the favorites hide line in getFavoriteStatus)
+// is MULTIPLIED by it, and the distance they are RANKED by is divided by it. At
+// 5× a station 3 km out sorts among the 600 m bus stops. Only reach and rank
+// scale: the `dist` field every caller displays stays the true distance. This
+// knowledge lives here and nowhere else — callers just sort by `eff` (see
+// findNearbyStops).
+// BA = BART, CT = Caltrain, SB = SF Bay Ferry (13 terminals region-wide, even
+// sparser than rail — the same "worth going farther for" reasoning applies).
+var RAIL_AGENCIES = { BA: 1, CT: 1, SB: 1 };
 
 // Reach/rank multiplier for an agency; 1 for ordinary stops (no scaling).
 function railScale(agency, settings) {
