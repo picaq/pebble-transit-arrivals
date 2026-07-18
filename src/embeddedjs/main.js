@@ -142,10 +142,17 @@ const VISIBLE_ARRIVALS = Math.floor((render.height - HEADER_H - 4) / ARRIVAL_ROW
 // load-more page parses BESIDE the retained list, so free chunk shrinks with
 // every page loaded. That crash was observed at ~4 am, when few arrivals mean
 // short subtitles and small payloads: daytime rows cost more, so it will bite
-// sooner. 24 is a deliberately conservative step up from the known-safe 14 and
-// has NOT been measured — raise it only against the §F instrumentation
-// (chunk/slot headroom on a full list), never by guessing.
-const LIST_RETAIN_MAX = 24;
+// sooner. 24 was a deliberately conservative step up from the known-safe 14.
+//
+// Raised to 30 on 2026-07-17 so a fast scroller keeps ~2 screens of
+// scrolled-past stops to back up into (VISIBLE_ROWS is ~5 on emery). The tight
+// case is a full favorites block (10, all pinned): right after a load-more the
+// retained NEARBY rows above the cursor are 30 − 10 fav − 8 new-page − 1 = 11,
+// i.e. ~2 screens; fewer favorites leave more. Was one screen at 24. This is a
+// +6 bump and MUST be re-validated against the §F instrumentation (chunk
+// headroom on a deep scroll of a FULL 30-row list, the load-more-parses-beside-
+// the-retained-list geometry) — never raise it further by guessing.
+const LIST_RETAIN_MAX = 30;
 const ARR_DEFAULT = 6;  // arrivals requested on open
 const ARR_MAX = 10;     // arrivals ceiling for "load more" (phone caps too)
 const ARR_STEP = 4;     // arrivals added per "load more" (6 → 10)
