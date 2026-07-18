@@ -262,6 +262,13 @@ const state = {
                               // cursor. Not rows.length: trimRetained() evicts
                               // rows off the top, and pagination must not rewind
                               // with them (that would re-fetch stops you passed)
+  paginated: false,           // user has loaded ≥1 "more" page: the retained list
+                              // now holds stops the phone's page-0 refresh WON'T
+                              // return, so an involuntary reload (the reconnect
+                              // listener) would drop them and leave the user in the
+                              // short page-0 tail (with SF Muni off, ~just
+                              // favorites). Gates that reload; cleared by any full
+                              // reload (setRowsFromResponse re-baselines page-0)
   favPending: false,          // in-flight guard for the favorite toggle
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
   revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
@@ -298,6 +305,7 @@ function setRowsFromResponse(list) {
   }));
   if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
   state.moreExhausted = false; // a full (re)load resets "load more" pagination
+  state.paginated = false;     // this IS page-0 again — the cursor is back in range
   // Re-seed the pagination cursor from what this list actually contains.
   let n = 0;
   for (let i = 0; i < state.rows.length; i++) if (!state.rows[i].fav) n++;
@@ -819,6 +827,11 @@ function scheduleRevalidate() {
 function fetchMore() {
   if (state.nearbyPending || state.moreExhausted) return;
   state.nearbyPending = true;
+  // From here the retained list holds stops a page-0 refresh won't return, so an
+  // involuntary reload (the reconnect listener) must not clobber it — see the
+  // "connected" handler. A voluntary refresh (Up-at-top, or a settings change)
+  // still reloads and re-baselines page-0, which clears this flag.
+  state.paginated = true;
   protocol.moreStops(state.moreOff)
     .then(resp => {
       state.nearbyPending = false;
@@ -1118,8 +1131,16 @@ protocol.onSettingsChanged = () => {
 // from here: a watch-initiated fetch can beat pkjs's startup and vanish
 // (CLAUDE.md §6), and its in-flight guard would then swallow the ping's fetch.
 // On a disconnect event this fails gracefully into the offline countdown.
+//
+// EXCEPT a paginated LIST: reloading returns page-0 only, so an involuntary
+// reload here would drop every "load more" stop and drop the user into the
+// short page-0 tail — with SF Muni off that tail is ~just favorites, so a
+// reconnect firing mid-scroll looked like "scrolling down jumped me to the
+// bottom of my favorites." A reconnect is not worth destroying the list the
+// user built; they still have pull-to-refresh (Up-at-top) if they want it.
 watch.addEventListener("connected", () => {
-  if (state.mode === MODE_ARRIVALS || state.rows.length) refreshCurrent();
+  if (state.mode === MODE_ARRIVALS) refreshCurrent();
+  else if (state.rows.length && !state.paginated) refreshCurrent();
 });
 
 state.status = watch.connected.app ? "Connecting…" : "Waiting for phone…";
