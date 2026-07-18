@@ -3,7 +3,7 @@
 Live Bay Area transit arrivals and departures on your wrist, NextBus-style:
 the watch shows nearby stops (plus your ★ favorites), and opening a stop shows
 live predictions that refresh automatically. Supports **SF Muni, BART,
-AC Transit, Golden Gate Transit, and SamTrans** out of the box via the free
+AC Transit, Golden Gate Transit, SamTrans, and SF Bay Ferry** out of the box via the free
 511.org regional API, with a settings toggle for each and a field to add any
 other 511 operator (Caltrain, VTA, WETA ferries, …).
 
@@ -218,9 +218,9 @@ recent 24 rows in memory (favorites always stay pinned at the top), so stops you
 scrolled well past drop off the list as new ones load — press Up at the top to
 reload the list around where you are now.
 
-Train stations are worth going farther for than bus stops, so the settings
-page has a **BART/Caltrain distance multiplier** slider (1–30×, default
-1 = off). It scales BART and Caltrain two ways — for favorites and ordinary
+Train stations and ferry terminals are worth going farther for than bus stops,
+so the settings page has a **BART/Caltrain/ferry distance multiplier** slider (1–30×, default
+1 = off). It scales BART, Caltrain, and SF Bay Ferry two ways — for favorites and ordinary
 nearby stops alike. **Reach:** they are found this many times farther out
 (and favorites stay on the list this many times past the “Hide favorites
 beyond” distance, e.g. 19 km × 10 = 190 km, keeping your starred station on

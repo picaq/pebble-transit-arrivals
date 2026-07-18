@@ -63,7 +63,7 @@ var SETTINGS_KEY = "settings.v1";
 // settings.agencies (CT = Caltrain, SC = VTA, …) came from the ExtraAgencies
 // free-text field, and both halves of the Clay round trip — filling the field
 // in showConfiguration and re-reading it in webviewclosed — key off this list.
-var TOGGLED_AGENCIES = ["SF", "BA", "AC", "GG", "SM"];
+var TOGGLED_AGENCIES = ["SF", "BA", "AC", "GG", "SM", "SB"];
 
 var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
@@ -285,6 +285,7 @@ Pebble.addEventListener("showConfiguration", function () {
   clay.setSettings("AgencyAC", s.agencies.indexOf("AC") >= 0);
   clay.setSettings("AgencyGG", s.agencies.indexOf("GG") >= 0);
   clay.setSettings("AgencySM", s.agencies.indexOf("SM") >= 0);
+  clay.setSettings("AgencySB", s.agencies.indexOf("SB") >= 0);
   // Everything not covered by a toggle above (CT, SC, …) goes back into the
   // free-text field. Without this the field renders EMPTY however many extra
   // agencies are saved, and the next save reads it as "" — silently dropping
@@ -358,6 +359,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
   if (val("AgencyAC", true)) agencies.push("AC");
   if (val("AgencyGG", true)) agencies.push("GG");
   if (val("AgencySM", true)) agencies.push("SM");
+  if (val("AgencySB", true)) agencies.push("SB");
   String(val("ExtraAgencies", ""))
     .split(",")
     .forEach(function (code) {

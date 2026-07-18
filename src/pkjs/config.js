@@ -44,6 +44,7 @@ module.exports = [
       { type: "toggle", messageKey: "AgencyAC", label: "AC Transit", defaultValue: true },
       { type: "toggle", messageKey: "AgencyGG", label: "Golden Gate Transit", defaultValue: true },
       { type: "toggle", messageKey: "AgencySM", label: "SamTrans", defaultValue: true },
+      { type: "toggle", messageKey: "AgencySB", label: "SF Bay Ferry", defaultValue: true },
       {
         type: "input",
         messageKey: "ExtraAgencies",

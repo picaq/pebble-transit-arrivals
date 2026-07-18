@@ -29,7 +29,13 @@ https://511.org/open-data/transit (spec PDF linked from that page).
 | AC | AC Transit |
 | GG | Golden Gate Transit (GF = Golden Gate Ferry) |
 | SM | SamTrans |
+| SB | San Francisco Bay Ferry (WETA; 13 terminals, real-time StopMonitoring works — many visits are schedule-only with `AimedArrivalTime` and no `Expected*`, which `getArrivals` already falls back to). Given BART/Caltrain reach via `RAIL_AGENCIES` |
 | CT | Caltrain (example “extra” code) |
+
+Other ferries in the regional feed, addable via the **Extra agency codes**
+field: `GF` Golden Gate Ferry, `AF` Angel Island–Tiburon, `TF` Treasure
+Island. They are not in `RAIL_AGENCIES`, so they get no extra reach unless
+added there.
 
 Authoritative, current list (codes occasionally change — verify before
 hardcoding new ones):
