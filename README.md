@@ -331,6 +331,9 @@ setup/environment issues.
   modules, message-size limits, rate-limit budget) plus a pre-flight
   checklist, so generated changes stay buildable.
 
+## TODO
+- [ ] rename app to “Transit Minute”
+
 ## Data attribution
 
 Transit data © 511 SF Bay / Metropolitan Transportation Commission.
