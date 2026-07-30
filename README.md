@@ -1,6 +1,6 @@
 # Transit Minute — Pebble Time 2 starter app + framework
 
-Live Bay Area transit arrivals and departures on your wrist, NextBus-style:
+Live Bay Area transit arrivals and departures on your wrist,
 the watch shows nearby stops (plus your ★ favorites), and opening a stop shows
 live predictions that refresh automatically. Supports **SF Muni, BART,
 AC Transit, Golden Gate Transit, SamTrans, and SF Bay Ferry** out of the box via the free
