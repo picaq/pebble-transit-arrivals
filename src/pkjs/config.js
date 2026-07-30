@@ -11,7 +11,7 @@
 module.exports = [
   {
     type: "heading",
-    defaultValue: "Transit Glance"
+    defaultValue: "Transit Minute"
   },
   {
     type: "text",

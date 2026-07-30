@@ -1,4 +1,4 @@
-# design.md — Transit Glance: styles & behaviors catalog
+# design.md — Transit Minute: styles & behaviors catalog
 
 Every user-visible style and behavior in the app, where it lives in the
 code, and what to watch out for when changing it. Line numbers are
@@ -24,7 +24,7 @@ CLAUDE.md §11–12 and `docs/WATCH-DEBUGGING-PLAYBOOK.md`):
 
 | Screen | What it shows | Entry / exit |
 |---|---|---|
-| LIST (`MODE_LIST`) | Header “Transit Glance”, then favorites (★, nearest first, hidden entirely beyond the hide-distance setting) followed by nearby stops; any row — favorite or not — is dimmed when nothing is arriving | App start; Back from ARRIVALS |
+| LIST (`MODE_LIST`) | Header “Transit Minute”, then favorites (★, nearest first, hidden entirely beyond the hide-distance setting) followed by nearby stops; any row — favorite or not — is dimmed when nothing is arriving | App start; Back from ARRIVALS |
 | ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, scrollable arrival rows (~4 visible, `VISIBLE_ARRIVALS`), footer favorite hint | Select on a list row; Back returns |
 
 All rendering is Poco (immediate mode, full redraw) in
@@ -119,7 +119,7 @@ from ~124 B to ~1.9 KB after the switch). `timeX` is remeasured in-frame
 
 | Text | Where |
 |---|---|
-| Header title “Transit Glance” (+ “…” appended after the title while a refresh is in flight — both screens, the arrivals header gets it too; “…” because its glyph is proven in Gothic-Bold 18; arrow glyphs like ↻ are not in the font and render blank) | `drawHeader()` / `drawHeaderBusy()`, `main.js` |
+| Header title “Transit Minute” (+ “…” appended after the title while a refresh is in flight — both screens, the arrivals header gets it too; “…” because its glyph is proven in Gothic-Bold 18; arrow glyphs like ↻ are not in the font and render blank) | `drawHeader()` / `drawHeaderBusy()`, `main.js` |
 | “★ hold Select to unfavorite” / “Select to ★ favorite” | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js` |
 | "Offline · updated Nm ago" (arrivals footer, replaces the favorite hint while showing last-known arrivals with no network; N = whole minutes since fetch) | `OFFLINE_PREFIX` + age, built in `buildOfflineText()` / `tickArrivals()`, `main.js` (precomputed into `state.offlineText`, off the draw path) |
 | "No live data" (arrivals body, when the last-known arrivals all age out while offline) | `tickArrivals()`, `main.js` |

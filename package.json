@@ -1,5 +1,5 @@
 {
-  "name": "transit-glance",
+  "name": "transit-minute",
   "author": "picaq <picaq@berkeley.edu>",
   "version": "1.0.0",
   "keywords": [
@@ -10,7 +10,7 @@
     "@rebble/clay": "^1.0.10"
   },
   "pebble": {
-    "displayName": "Transit Glance",
+    "displayName": "Transit Minute",
     "uuid": "bf389767-c9ba-43f5-872a-0b07c716332e",
     "projectType": "moddable",
     "sdkVersion": "3",

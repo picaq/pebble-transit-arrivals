@@ -1,6 +1,6 @@
-# Transit Glance — Pebble Time 2 starter app + framework
+# Transit Minute — Pebble Time 2 starter app + framework
 
-Live Bay Area transit arrivals and departures on your wrist, NextBus-style:
+Live Bay Area transit arrivals and departures on your wrist,
 the watch shows nearby stops (plus your ★ favorites), and opening a stop shows
 live predictions that refresh automatically. Supports **SF Muni, BART,
 AC Transit, Golden Gate Transit, SamTrans, and SF Bay Ferry** out of the box via the free
@@ -171,7 +171,7 @@ location; on real hardware your phone’s GPS is used.
    pebble install --phone <PHONE_IP>
    ```
 
-3. In the Pebble phone app, open Transit Glance’s **settings (gear icon)**,
+3. In the Pebble phone app, open Transit Minute’s **settings (gear icon)**,
    enter your 511 API key, pick your agencies, save.
 
 **Rebuilding after code changes:** once the app is already installed on your
@@ -335,9 +335,6 @@ setup/environment issues.
   `CLAUDE.md`. It encodes the environment rules (two JS runtimes, manifest
   modules, message-size limits, rate-limit budget) plus a pre-flight
   checklist, so generated changes stay buildable.
-
-## TODO
-- [ ] rename app to “Transit Minute”
 
 ## Data attribution
 
