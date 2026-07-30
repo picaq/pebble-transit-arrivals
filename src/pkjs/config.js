@@ -99,13 +99,16 @@ module.exports = [
       {
         type: "slider",
         messageKey: "RailRadiusX",
-        label: "BART/Caltrain distance multiplier",
+        label: "Train distance multiplier",
         description:
           "How much farther a train is worth going than a bus (1 = the " +
-          "same). BART and Caltrain stops — favorites and nearby ones " +
-          "alike — are found this many times farther out, and are ranked " +
-          "as if they were this many times closer: at 5×, a station 3 km " +
-          "away sits among the 600 m bus stops in the list. Favorites also " +
+          "same). BART, Caltrain and ferry stops — favorites and nearby " +
+          "ones alike — are found this many times farther out, and are " +
+          "ranked as if they were this many times closer: at 5×, a station " +
+          "3 km away sits among the 600 m bus stops in the list. Muni " +
+          "counts where it runs underground: its 12 subway stations, and " +
+          "the stops on the same corner, scale the same way, while Muni's " +
+          "surface stops do not. Favorites also " +
           "stay on the list this many times past the hide distance above " +
           "(with 19 km: 5× = 95 km, 30× = 570 km — your starred station " +
           "stays on the watch for the whole ride). Distances shown on the " +

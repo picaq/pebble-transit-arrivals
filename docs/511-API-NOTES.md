@@ -91,6 +91,17 @@ identical:
   choose between. It needs no help: the direction is already in the name.
 - **Muni** publishes no `ParentStation`, so nothing collapses. Its two
   sides of a street are different places to stand.
+- **Nothing in the feed says a Muni stop is underground.** No mode field, no
+  `ParentStation`, and `Name` won’t do it either: all 12 subway stations do
+  carry “Station”, but so do surface stops (`Ocean Ave/Balboa Park BART
+  Station`, `San Jose Ave/Glen Park Station`, three `Daly City BART`
+  variants), and the station names themselves are inconsistent — `Metro
+  Powell Station/Outbound`, `Van Ness Station Outbound`, `West Portal
+  Station`, `Chinatown - Rose Pak Station`. That matters because the subway
+  is BART-fast and the same lines on the surface are not, so
+  `transit511.js` carries the 12 station **coordinates** (`METRO_HUBS`) and
+  scales any stop within 100 m of one. Verified against the live list
+  2026-07-29: 29 stops match `Station`, 23 of them the real platforms.
 
 Note 511 sometimes gives *genuinely identical names to different stops*:
 `San Jose Ave & Geneva Ave` is five distinct codes within 180 m, and
