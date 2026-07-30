@@ -219,7 +219,7 @@ scrolled well past drop off the list as new ones load — press Up at the to
 reload the list around where you are now.
 
 Train stations and ferry terminals are worth going farther for than bus stops,
-so the settings page has a **BART/Caltrain/ferry distance multiplier** slider (1–30×, default
+so the settings page has a **Train distance multiplier** slider (1–30×, default
 1 = off). It scales BART, Caltrain, and SF Bay Ferry two ways — for favorites and ordinary
 nearby stops alike. **Reach:** they are found this many times farther out
 (and favorites stay on the list this many times past the “Hide favorites
@@ -228,6 +228,11 @@ the list for the whole ride). **Rank:** they sort as if they were this many
 times closer, so at 5× a station 3 km away sits among the 600 m bus stops
 instead of at the bottom. The distance shown on each row is always the real
 one — the multiplier only decides ordering and reach.
+
+Muni Metro counts as a train where it runs underground: its twelve subway
+stations scale the same way, and so do the stops on the same corner — you
+walked there for the train, so whatever else stops there is worth the same
+walk. Muni’s surface stops are ordinary stops and are never scaled.
 
 ## Troubleshooting
 

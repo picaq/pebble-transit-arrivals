@@ -69,7 +69,7 @@ var DEFAULT_SETTINGS = {
   apiKey: localSecrets.apiKey || "",
   agencies: TOGGLED_AGENCIES.slice(),
   radiusM: 500,
-  railRadiusX: 1, // BART/Caltrain reach ×this and rank ÷this (1 = off); see transit511 railScale
+  railRadiusX: 1, // rail reach ×this and rank ÷this (1 = off); see transit511 stopScale
   maxStops: 8,
   hideFavKm: 19 // favorites farther than this are left out of the rows response (~12 mi)
 };
@@ -613,14 +613,15 @@ function stopLabel(rawName, info) {
 // stops.
 //
 // "Nearest" in both blocks means nearest by EFFECTIVE distance — real
-// distance ÷ railRadiusX for BART/Caltrain (transit511's railScale; the
-// provider hands back `eff` beside `dist` so rail knowledge stays behind
-// the provider boundary). A far station therefore interleaves with the bus
-// stops it's worth as much as instead of sitting at the bottom. Rows always
-// DISPLAY the real distance.
+// distance ÷ railRadiusX for a rail stop (transit511's stopScale, which
+// decides that per stop: whole agencies for BART/Caltrain/ferry, plus
+// anything at a Muni Metro subway station; the provider hands back `eff`
+// beside `dist` so rail knowledge stays behind the provider boundary). A far
+// station therefore interleaves with the bus stops it's worth as much as
+// instead of sitting at the bottom. Rows always DISPLAY the real distance.
 //
-// Favorites farther than settings.hideFavKm — × railRadiusX for BART/
-// Caltrain, the same reach the nearby search now gives them
+// Favorites farther than settings.hideFavKm — × railRadiusX for a rail
+// favorite, the same reach the nearby search now gives it
 // (getFavoriteStatus flags them far:1) — are left out entirely: no payload
 // bytes, no arrival-check API calls (they reappear when you get closer, and
 // stay editable on the settings page) — but they are NOT suppressed from the
@@ -672,7 +673,7 @@ function buildRows(req, lat, lon, settings) {
       favs.forEach(function (f) {
         var st = status[f.agency + ":" + f.code];
         var dist = st && st.dist >= 0 ? st.dist : undefined;
-        // Beyond the hide line — per-agency: BART/Caltrain favorites reach
+        // Beyond the hide line — per-stop: a rail favorite reaches
         // hideFavKm × railRadiusX (getFavoriteStatus computes the flag).
         if (st && st.far) return;
         if (st && st.canonBase) {
@@ -709,8 +710,8 @@ function buildRows(req, lat, lon, settings) {
             (dist !== undefined ? " · " + formatDistM(dist) : "") +
             (noArr ? " · no arrivals" : dirLinesSuffix(info)),
           f: 1,
-          // Rank (not display) distance: getFavoriteStatus divides BART/
-          // Caltrain by railRadiusX, so a starred station sorts among the
+          // Rank (not display) distance: getFavoriteStatus divides a rail
+          // stop by railRadiusX, so a starred station sorts among the
           // stops it's worth as much as. Unknown distance sorts last.
           _d: st && st.eff >= 0 ? st.eff : 1e9
         };
@@ -812,7 +813,7 @@ function buildRows(req, lat, lon, settings) {
 // "Load more stops": return non-favorite nearby stops beyond the req.off
 // nearest (the ones the watch already shows), ranked by effective distance
 // from a wide search — same ranking as page 0, so req.off lines up with what
-// the watch has and BART/Caltrain keep their railRadiusX reach out of the
+// the watch has and rail stops keep their railRadiusX reach out of the
 // wider MORE_RADIUS_M search. No favorites block and no stale cache — the
 // watch appends these to its list. An empty rows array means there are no
 // more stops (the watch then stops asking). Mirrors buildRows' subtitles.
@@ -831,7 +832,7 @@ function buildMoreRows(req, lat, lon, settings) {
     // a deep page, beyond the 19 km hideFavKm default — invisible in BOTH
     // blocks, with no way back to it from the watch.
     //
-    // `eff` is the rank distance (real distance ÷ the agency's rail scale),
+    // `eff` is the rank distance (real distance ÷ the stop's rail scale),
     // and getFavoriteStatus's far test divides by that same scale, so
     // `eff > hideM` is exactly its far:1 — no rail knowledge leaks over the
     // provider boundary here.

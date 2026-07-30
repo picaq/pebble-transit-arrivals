@@ -303,24 +303,79 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // list and the AppMessage payload bounded even in the densest area.
 var HARD_STOP_CEILING = 14;
 
-// High-reach agencies that climb farther up the list: BART and Caltrain
-// stations — and ferry terminals — are sparse and one is worth walking farther
-// for, so settings.railRadiusX scales them two ways — their eligibility radius
-// (the nearby search radius, and the favorites hide line in getFavoriteStatus)
-// is MULTIPLIED by it, and the distance they are RANKED by is divided by it. At
-// 5× a station 3 km out sorts among the 600 m bus stops. Only reach and rank
-// scale: the `dist` field every caller displays stays the true distance. This
-// knowledge lives here and nowhere else — callers just sort by `eff` (see
-// findNearbyStops).
+// What climbs farther up the list is decided per STOP (stopScale below), from
+// two sources: these whole agencies, and the Muni Metro hubs after them.
+//
+// High-reach agencies: BART and Caltrain stations — and ferry terminals — are
+// sparse and one is worth walking farther for, so settings.railRadiusX scales
+// them two ways — their eligibility radius (the nearby search radius, and the
+// favorites hide line in getFavoriteStatus) is MULTIPLIED by it, and the
+// distance they are RANKED by is divided by it. At 5× a station 3 km out sorts
+// among the 600 m bus stops. Only reach and rank scale: the `dist` field every
+// caller displays stays the true distance. This knowledge lives here and
+// nowhere else — callers just sort by `eff` (see findNearbyStops).
 // BA = BART, CT = Caltrain, SB = SF Bay Ferry (13 terminals region-wide, even
 // sparser than rail — the same "worth going farther for" reasoning applies).
 var RAIL_AGENCIES = { BA: 1, CT: 1, SB: 1 };
 
-// Reach/rank multiplier for an agency; 1 for ordinary stops (no scaling).
-function railScale(agency, settings) {
-  if (!RAIL_AGENCIES[agency]) return 1;
+// Muni Metro's subway stations, which earn the same scaling as BART: these
+// trains run in the Market Street and Twin Peaks tunnels and the Central
+// Subway, grade-separated and just as fast, while the same lines on the
+// surface are not. So this one cannot be an agency-wide flag like
+// RAIL_AGENCIES — SF is one agency holding both kinds of stop — and 511
+// publishes nothing that tells them apart: no ParentStation, no mode field,
+// and matching "Station" in the name also catches surface stops ("Ocean
+// Ave/Balboa Park BART Station", "San Jose Ave/Glen Park Station").
+//
+// Coordinates rather than stop codes, because one proximity test then covers
+// both the station's own platforms (they sit within ~50 m of the centroid)
+// and the stops at the same corner, which are the same walk once you have
+// decided the train is worth it. Codes and names churn; these twelve holes in
+// the ground do not. Centroids are each station's platform entries averaged,
+// from the live Muni stop list (2026-07-29).
+var METRO_HUBS = [
+  [37.792922, -122.396791], // Embarcadero
+  [37.789005, -122.401739], // Montgomery
+  [37.784476, -122.407454], // Powell
+  [37.779476, -122.413785], // Civic Center
+  [37.775180, -122.419296], // Van Ness
+  [37.767261, -122.429245], // Church
+  [37.762652, -122.435260], // Castro
+  [37.748261, -122.458908], // Forest Hill
+  [37.741455, -122.465373], // West Portal
+  [37.794807, -122.408078], // Chinatown - Rose Pak
+  [37.787142, -122.406500], // Union Square / Market St
+  [37.782369, -122.401640]  // Yerba Buena / Moscone
+];
+// How far "at the station" reaches. 100 m is the same corner: it pulls in 2-7
+// extra stops per station (Powell picks up Market & Powell, both Powell &
+// Market platforms and Market & 5th). 250 m would be 17-24 downtown, which at
+// a high multiplier hands one intersection most of the 14-row list.
+var HUB_NEAR_M = 100;
+// Bounding box for that radius in degrees, to skip the trig for the ~all of
+// the city that is nowhere near a station. Longitude degrees are shorter at
+// SF's latitude (cos 37.8° ≈ 0.79); one constant covers a 100 m box.
+var HUB_DLAT = HUB_NEAR_M / 111320;
+var HUB_DLON = HUB_NEAR_M / (111320 * 0.79);
+
+function nearMetroHub(lat, lon) {
+  for (var i = 0; i < METRO_HUBS.length; i++) {
+    var h = METRO_HUBS[i];
+    if (Math.abs(lat - h[0]) > HUB_DLAT) continue;
+    if (Math.abs(lon - h[1]) > HUB_DLON) continue;
+    if (haversineMeters(lat, lon, h[0], h[1]) <= HUB_NEAR_M) return true;
+  }
+  return false;
+}
+
+// Reach/rank multiplier for one stop; 1 for ordinary stops (no scaling).
+// Deliberately agency-blind at the hubs: a Golden Gate or AC stop outside
+// Embarcadero is the same walk to the same train as Muni's own.
+function stopScale(agency, lat, lon, settings) {
   var x = Number(settings.railRadiusX) || 1;
-  return x > 1 ? x : 1;
+  if (x <= 1) return 1;                   // multiplier off: nothing scales
+  if (RAIL_AGENCIES[agency]) return x;    // whole-agency rail
+  return nearMetroHub(lat, lon) ? x : 1;  // any stop at a subway station
 }
 
 /**
@@ -353,11 +408,12 @@ function selectNearbyStops(results, maxStops, ceiling) {
  * Find stops near (lat, lon) across all enabled agencies.
  * settings: { apiKey, agencies: ["SF", ...], radiusM, maxStops, railRadiusX }
  * cb(err, stops) where stops = [{ agency, code, name, dist, eff }] sorted by
- * `eff`, the effective (rank) distance: `dist` divided by the agency's
- * railScale, so BART/Caltrain stations interleave with the bus stops they
- * are worth as much as. `dist` is the real distance — display that.
- * BART/Caltrain are also searched out to radiusM × railRadiusX, so the far
- * station is in the candidate set in the first place.
+ * `eff`, the effective (rank) distance: `dist` divided by the stop's
+ * stopScale, so a BART/Caltrain station or a Muni Metro subway stop
+ * interleaves with the bus stops it is worth as much as. `dist` is the real
+ * distance — display that. Those stops are also searched out to
+ * radiusM × railRadiusX, so the far station is in the candidate set in the
+ * first place.
  *
  * Agencies are fetched sequentially so a cold cache doesn't burst the rate
  * limit; warm caches make this loop instant and network-free.
@@ -387,13 +443,22 @@ function findNearbyStops(lat, lon, settings, cb) {
         return next();
       }
       // Rail reaches railRadiusX times farther and ranks railRadiusX times
-      // nearer; ordinary agencies get mult = 1 and behave exactly as before.
-      var mult = railScale(agency, settings);
-      var radius = settings.radiusM * mult;
+      // nearer; ordinary stops get mult = 1 and behave exactly as before.
+      // Two gates, because a Muni stop's scale depends on WHERE it is and so
+      // isn't knowable until its distance has been measured: `scan` is the
+      // widest any stop in this agency could reach, and the exact radius is
+      // re-tested per stop below. The hub lookup therefore only runs on what
+      // survives the scan, and not at all while the multiplier is off.
+      var x = Number(settings.railRadiusX) || 1;
+      if (x < 1) x = 1;
+      var base = RAIL_AGENCIES[agency] ? x : 1;
+      var scan = settings.radiusM * x;
       for (var i = 0; i < stops.length; i++) {
         var s = stops[i];
         var d = haversineMeters(lat, lon, s[2], s[3]);
-        if (d <= radius) {
+        if (d <= scan) {
+          var mult = base > 1 ? base : stopScale(agency, s[2], s[3], settings);
+          if (d > settings.radiusM * mult) continue;
           results.push({
             agency: agency,
             code: s[0],
@@ -608,12 +673,13 @@ function getStopInfo(agency, apiKey, cb) {
  * favs: [{ agency, code, name }] (≤ 10)
  * maxCheckM: the base hide line — favorites farther than it come back with
  * far:1 (the caller drops those from the list) and skip the arrival check.
- * RAIL_AGENCIES favorites use maxCheckM × settings.railRadiusX instead
- * (railScale), the same reach the nearby search gives them.
+ * A rail favorite — a RAIL_AGENCIES stop or one at a Muni Metro hub — uses
+ * maxCheckM × settings.railRadiusX instead (stopScale), the same reach the
+ * nearby search gives it.
  * cb(null, [{ agency, code, canon?, dist, eff, name?, far?, hasArr? }]) — dist
  * in meters, -1 when the stop can't be found (never far:1 — an unresolved
  * favorite still shows, with its saved name); eff is the rank distance
- * (dist ÷ railScale, -1 alongside an unknown dist) that the caller orders
+ * (dist ÷ stopScale, -1 alongside an unknown dist) that the caller orders
  * the favorites block by; name comes from the cached stop list (absent on a
  * cache/API miss); hasArr only present when it was actually checked.
  * Never fails as a whole: unresolvable favorites just come back dist -1.
@@ -641,10 +707,11 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
     var agency = agencies.shift();
     fetchStops(agency, settings.apiKey, function (err, stops, alias) {
       var codes = byAgency[agency];
-      var mult = railScale(agency, settings);
       for (var i = 0; i < codes.length; i++) {
         var dist = -1;
         var name;
+        var sLat = 0;
+        var sLon = 0;
         var code = codes[i];
         // A favorite may be saved against a code we have since retired: a BART
         // PLATFORM id (901801), or a bare STATION id from the brief spell when
@@ -658,6 +725,8 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
             if (stops[j][0] === code) {          // still a real stop
               dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
               name = stops[j][1].slice(0, 64);   // raw — see findNearbyStops
+              sLat = stops[j][2];
+              sLon = stops[j][3];
               break;
             }
             // Every direction of a station shares its name and centroid, so
@@ -667,10 +736,16 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
                 stops[j][0].indexOf(base + DIR_CODE_SEP) === 0) {
               dist = Math.round(haversineMeters(lat, lon, stops[j][2], stops[j][3]));
               name = stops[j][1].slice(0, 64);
+              sLat = stops[j][2];
+              sLon = stops[j][3];
               canonBase = base;
             }
           }
         }
+        // Per favorite, not per agency: a Muni favorite is scaled only if it
+        // sits at a Metro hub, which takes the stop's own coordinates. An
+        // unresolved favorite (dist -1) never reaches the far test.
+        var mult = dist >= 0 ? stopScale(agency, sLat, sLon, settings) : 1;
         var entry = {
           agency: agency,
           code: code, // as stored, so the caller can match its record
