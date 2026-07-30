@@ -1,5 +1,5 @@
 /*
- * main.js — Transit Glance watch app (runs ON THE WATCH, XS engine).
+ * main.js — Transit Minute watch app (runs ON THE WATCH, XS engine).
  *
  * Screens:
  *   LIST     — favorites (★) followed by nearby stops, scroll with Up/Down,
@@ -473,7 +473,7 @@ function draw() {
 
   if (state.mode === MODE_LIST) {
     fitVisibleRows(); // no-op once the visible rows are fitted
-    drawHeader("Transit Glance", state.listRefreshing);
+    drawHeader("Transit Minute", state.listRefreshing);
     if (!state.rows.length) {
       render.drawText(state.status, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
@@ -739,7 +739,7 @@ function fetchNearby(fresh) {
   state.nearbyPending = true;
   if (state.rows.length) {
     state.listRefreshing = true;
-    drawHeaderBusy("Transit Glance");
+    drawHeaderBusy("Transit Minute");
   } else {
     state.status = "Finding stops…";
     draw();
