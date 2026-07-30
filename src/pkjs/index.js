@@ -1,5 +1,5 @@
 /*
- * index.js — phone side of Transit Glance (PebbleKit JS).
+ * index.js — phone side of Transit Minute (PebbleKit JS).
  *
  * Responsibilities:
  *   1. Serve the Clay settings page and persist settings in PHONE
@@ -1025,7 +1025,7 @@ function dropStaleStopCaches() {
 }
 
 Pebble.addEventListener("ready", function () {
-  console.log("Transit Glance PKJS ready");
+  console.log("Transit Minute PKJS ready");
   dropStaleStopCaches();
   // The watch usually boots before this JS is listening, so its first
   // nearby request can vanish and time out. SettingsChanged doubles as a
