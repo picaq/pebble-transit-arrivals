@@ -323,10 +323,15 @@ function setRowsFromResponse(list) {
   if (state.sel >= state.rows.length) state.sel = Math.max(0, state.rows.length - 1);
   state.moreExhausted = false; // a full (re)load resets "load more" pagination
   state.paginated = false;     // this IS page-0 again — the cursor is back in range
-  // Re-seed the pagination cursor from what this list actually contains.
-  let n = 0;
-  for (let i = 0; i < state.rows.length; i++) if (!state.rows[i].fav) n++;
-  state.moreOff = n;
+  // Re-seed the pagination cursor from what this list actually contains: the
+  // nearby block is everything AFTER the leading favorites block, which is not
+  // the same as "every unstarred row" — a favorite that didn't make the
+  // favorites block (past the hide line, or capped out of it) appears in the
+  // nearby block wearing its ★, and it is a row the phone handed over, so it
+  // must count toward `off` or the next page skips a stop.
+  let i = 0;
+  while (i < state.rows.length && state.rows[i].fav) i++;
+  state.moreOff = state.rows.length - i;
   clampScroll();
 }
 
