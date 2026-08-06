@@ -94,8 +94,27 @@ function loadFavs() {
   }
 }
 
+// Over the cap, shed HIDDEN records first, oldest (tail) first — they are
+// stops you already unfavorited, kept only so re-starring restores the name,
+// and losing one costs nothing you'd notice. Only if hidden records alone
+// can't get us under the cap does a real favorite fall off the end, which is
+// still silent and still permanent: the list is newest-first, so before this
+// starring a 21st stop quietly DELETED your oldest starred stop, and a few
+// unfavorited-but-remembered records made that arrive sooner than 20 stars.
 function saveFavs(list) {
-  localStorage.setItem(FAVS_KEY, JSON.stringify(list.slice(0, MAX_FAVORITES)));
+  var out = list;
+  if (out.length > MAX_FAVORITES) {
+    out = out.slice();
+    for (var i = out.length - 1; i >= 0 && out.length > MAX_FAVORITES; i--) {
+      if (out[i].hide) out.splice(i, 1);
+    }
+    if (out.length > MAX_FAVORITES) {
+      console.log("favorites: cap " + MAX_FAVORITES + " reached, dropping " +
+        (out.length - MAX_FAVORITES) + " oldest");
+      out.length = MAX_FAVORITES;
+    }
+  }
+  localStorage.setItem(FAVS_KEY, JSON.stringify(out));
 }
 
 // Collapse records that now name the same stop. Two of them can only exist
