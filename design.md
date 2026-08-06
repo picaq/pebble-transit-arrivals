@@ -62,7 +62,7 @@ hardcoded text y-offsets in `draw()` (`y + 2`, `y + 22`, `y + 26`).
 | `SUB_GRAY` | 60,60,60 | List subtitles (non-dim rows) and destination text on arrivals — higher contrast than GRAY |
 | `LINE_COLORS` | 6 colors: blue, red, green, purple, orange, teal | Route numbers without a color code, assigned by string hash (`colorForLine`) so e.g. “38” vs “38R” read apart |
 | `LINE_COLOR_CODES` | g 0,140,60 · y 215,170,0 · r 200,30,30 · o 210,110,0 · b 0,90,200 | Route names whose arrival carries a color code `k` from the phone — today that’s BART’s color-named lines, drawn in their line color (full name on the arrivals screen). Yellow is darkened for readability on white |
-| `AGENCY_COLORS` | SF 198,12,48 (Muni red) · BA 0,100,164 (BART blue) · CT 227,24,55 (Caltrain red) · AC 0,131,62 (AC Transit green) · GG 200,70,30 (Golden Gate orange) · SM 0,87,158 (SamTrans blue) · SB 0,150,160 (SF Bay Ferry teal — its livery is a blue, but BART/SamTrans already read as blue and AC as green, so a teal keeps the code distinct and evokes water) | The **agency code leading each list subtitle**, drawn in that operator’s brand color so “which system is this” reads before the text does. Approximations of each livery/wordmark, darkened where needed to stay legible as 14px text on white. Muni and Caltrain are both genuinely red, BART and SamTrans both genuinely blue — the two-letter **code** identifies the agency and the color only reinforces it. Applied **only on an ordinary row**: a selected row is white-on-accent (a dark brand blue on the blue bar would be unreadable) and a dimmed row stays uniformly gray, which is the entire signal that nothing is arriving. Unlisted agencies (any `ExtraAgencies` code) fall back to `SUB_GRAY`. Costs one precomputed row field (`row.agencyW`) so `draw()` still allocates nothing |
+| `AGENCY_COLORS` | SF 198,12,48 (Muni red) · BA 0,100,164 (BART blue) · CT 227,24,55 (Caltrain red) · AC 0,131,62 (AC Transit green) · GG 200,70,30 (Golden Gate orange) · SM 0,87,158 (SamTrans blue) · SB 0,150,160 (SF Bay Ferry teal — its livery is a blue, but BART/SamTrans already read as blue and AC as green, so a teal keeps the code distinct and evokes water) · CC 122,20,46 (County Connection burgundy — its livery is burgundy and gold, but gold can’t hold up as 14px text on white, so burgundy alone carries the brand) | The **agency code leading each list subtitle**, drawn in that operator’s brand color so “which system is this” reads before the text does. Approximations of each livery/wordmark, darkened where needed to stay legible as 14px text on white. Muni and Caltrain are both genuinely red, BART and SamTrans both genuinely blue — the two-letter **code** identifies the agency and the color only reinforces it. Applied **only on an ordinary row**: a selected row is white-on-accent (a dark brand blue on the blue bar would be unreadable) and a dimmed row stays uniformly gray, which is the entire signal that nothing is arriving. Unlisted agencies (any `ExtraAgencies` code) fall back to `SUB_GRAY`. Costs one precomputed row field (`row.agencyW`) so `draw()` still allocates nothing |
 | `STAR_COLOR` | 240,165,15 (amber) | The favorite ★ on a list row, drawn as its own piece of the title so it can carry its own color — midway between yellow and orange, dark enough to hold up as a glyph on white. White when the row is selected (readable on the accent bar). It does **NOT** gray out on a dimmed row: being a favorite has nothing to do with whether a bus is coming, and the star is what you scan the list for |
 | `TOKEN_GRAY` | = `GRAY` (120,120,120) | The trailing direction token and its middot (“ · N”, “ · I”), drawn as its own piece of the title. It identifies the stop but is not part of what the stop is *called*, and at full black it competed with the name. White when selected |
 
@@ -259,11 +259,24 @@ street-type words everywhere (“Powell Street” → “Powell St”; this step
 unconditional), (2) drop street types that end an intersection segment
 (“San Bruno Ave & Mansell St” → “San Bruno & Mansell” — a leading
 Saint-style “St” is safe: only a *trailing* type with a space before it is
-dropped), (3) hard-cut at 20 and trim any dangling “&”. Names already ≤20
-keep their types, so “4th St & Market St” stays unambiguous (SF has both
-4th St and 4th Ave); only too-long names trade that suffix for the cross
-street. This must stay phone-side: a watch-side expansion dictionary would
-cost bytecode = heap (playbook §B).
+dropped; `INTERSECTION_RE` matches both “&” and the spelled-out “and” some
+agencies use instead — County Connection stops read “Danville Blvd and El
+Cerro”, not “&”), (3) if still over budget, a **segment-aware** cut gives
+the cross street first claim (≥60% of what’s left, floor 4 chars) and
+shrinks the near-side street into whatever remains, falling back to a
+plain hard-cut-at-20-trim-dangling-punctuation only when there’s no “&”/“and”
+to split on. Before 2026-08-06 the cut was a single left-to-right slice at
+20 regardless of segments: for a two-segment name where the near-side
+street alone was close to 20 chars, the cut point landed *inside* the
+separator or the first letter of the cross street, and the dangling-stub
+rule then dropped that whole 1–2 char remnant — “Danville Blvd and El
+Cerro” came out as bare “Danville Blvd and”, losing the one thing that
+told six same-street County Connection stops apart (user report
+2026-08-06, screenshot showed identical “Danville Blvd and · N/S” rows).
+Names already ≤20 keep their types, so “4th St & Market St” stays
+unambiguous (SF has both 4th St and 4th Ave); only too-long names trade
+that suffix for the cross street. This must stay phone-side: a watch-side
+expansion dictionary would cost bytecode = heap (playbook §B).
 
 On-screen fitting on top of these caps is `ellipsize()` (binary-search,
 called only inside `begin()/end()`, results cached per row **while the row

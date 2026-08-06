@@ -99,10 +99,16 @@ const AGENCY_COLORS = {
   AC: render.makeColor(0, 131, 62),    // AC Transit green
   GG: render.makeColor(200, 70, 30),   // Golden Gate orange
   SM: render.makeColor(0, 87, 158),    // SamTrans blue
-  SB: render.makeColor(0, 150, 160)    // SF Bay Ferry teal (its livery is a
+  SB: render.makeColor(0, 150, 160),   // SF Bay Ferry teal (its livery is a
                                        // blue, but BART/SamTrans already own
                                        // blue and AC owns green — teal keeps the
                                        // code distinct and reads as water/ferry)
+  CC: render.makeColor(122, 20, 46)    // County Connection burgundy (its
+                                       // livery is burgundy and gold; gold is
+                                       // too light to hold up as 14px text on
+                                       // white, so burgundy alone carries the
+                                       // brand, same tradeoff as every other
+                                       // single-color approximation here)
 };
 
 // Separator the phone puts before a stop's direction letter ("Bayshore · N").
