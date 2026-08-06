@@ -557,28 +557,57 @@ var ABBREV_RES = STREET_TYPES.map(function (t) {
 var TYPE_SUFFIX_RE = new RegExp(
   " (" + STREET_TYPES.map(function (t) { return t[1]; }).join("|") + ")$"
 );
+// Word-boundary hard cut with dangling-stub protection: drop a trailing
+// STUB of a word ("12th St / Oakland Ci" -> "… Oakland"), but never a real
+// fragment. A longer fragment is still doing the work of telling two stops
+// apart: "San Bruno Ave & Wayland St" and "San Bruno Ave & Thornton Ave" cut
+// to "San Bruno & Wayla" and "San Bruno & Thorn", whereas rounding both back
+// to a word boundary collapses them BOTH to "San Bruno" — one useless label
+// on two different stops, 70 m apart.
+function hardCutWords(str, max) {
+  if (str.length <= max) return str;
+  var cut = str.slice(0, Math.max(0, max));
+  var sp = cut.lastIndexOf(" ");
+  if (sp > 0 && cut.length - sp - 1 <= 2) cut = cut.slice(0, sp);
+  return cut.replace(/[ &,/]+$/, "");
+}
+
+// Intersections are joined with "&" by most agencies but some (County
+// Connection observed 2026-08-06) spell it out as "and" instead — recognize
+// both so the segment-aware cut below still applies to those names, instead
+// of falling through to the plain hard cut and needing to touch both sides.
+var INTERSECTION_RE = /\s+(&|and)\s+/i;
+
 function compressStopName(name, max) {
   max = max || LIST_NAME_MAX;
   var out = String(name);
   ABBREV_RES.forEach(function (r) { out = out.replace(r[0], r[1]); });
-  if (out.length > max) {
-    out = out.split(" & ").map(function (part) {
-      return part.replace(TYPE_SUFFIX_RE, "");
-    }).join(" & ");
+  if (out.length <= max) return out;
+
+  var m = INTERSECTION_RE.exec(out);
+  if (m) {
+    var sep = m[0];
+    var first = out.slice(0, m.index).replace(TYPE_SUFFIX_RE, "");
+    var last = out.slice(m.index + sep.length).replace(TYPE_SUFFIX_RE, "");
+    out = first + sep + last;
+    if (out.length > max) {
+      // The cross street is what actually tells two stops on the same main
+      // street apart ("Danville Blvd and El Cerro" vs "Danville Blvd and
+      // Hartz"), so it gets first claim on the budget: shrink the near-side
+      // street to whatever's left instead of char-slicing the whole string
+      // left-to-right, which used to chop the cross street off entirely
+      // (a hard cut at `max` landed inside "and", leaving a 1-char stub that
+      // the dangling-stub rule then dropped along with everything after it).
+      var room = max - sep.length;
+      var lastBudget = Math.min(last.length, Math.max(4, Math.ceil(room * 0.6)));
+      last = hardCutWords(last, lastBudget);
+      first = hardCutWords(first, Math.max(0, room - last.length));
+      out = (first + sep + last).replace(/[ &,/]+$/, "");
+    }
+    return out;
   }
-  if (out.length > max) {
-    var cut = out.slice(0, max);
-    var sp = cut.lastIndexOf(" ");
-    // Drop a dangling STUB of a word ("12th St / Oakland Ci" -> "… Oakland"),
-    // but never a real fragment. A longer fragment is still doing the work of
-    // telling two stops apart: "San Bruno Ave & Wayland St" and "San Bruno Ave
-    // & Thornton Ave" cut to "San Bruno & Wayla" and "San Bruno & Thorn",
-    // whereas rounding both back to a word boundary collapses them BOTH to
-    // "San Bruno" — one useless label on two different stops, 70 m apart.
-    if (sp > 0 && cut.length - sp - 1 <= 2) cut = cut.slice(0, sp);
-    out = cut.replace(/[ &,/]+$/, "");
-  }
-  return out;
+
+  return hardCutWords(out, max);
 }
 
 // The display name for a stop: the compressed name, then " — " and the

@@ -7,6 +7,23 @@ AC Transit, Golden Gate Transit, SamTrans, and SF Bay Ferry** out of the box via
 511.org regional API, with a settings toggle for each and a field to add any
 other 511 operator (Caltrain, VTA, WETA ferries, …).
 
+| Code | Agency | Modes |
+| --- | --- | --- |
+| `SF` | SF Muni | Bus, Muni Metro light rail, historic streetcar, cable car |
+| `BA` | BART | Heavy rail (subway/metro) |
+| `AC` | AC Transit | Bus, including Transbay |
+| `GG` | Golden Gate Transit | Bus, ferry |
+| `SM` | SamTrans | Bus |
+| `SB` | SF Bay Ferry (WETA) | Ferry |
+| `CC` | County Connection (CCCTA) | Bus |
+| `CT` | Caltrain | Commuter rail |
+
+The first six are built-in toggles in settings; `CC`, `CT`, and any other
+[511 operator code](https://511.org/open-data/transit) go in the “Extra
+agency codes” field. Only `SF`, `BA`, `CT`, `AC`, `GG`, `SM`, `SB`, and `CC`
+get a brand color on the list screen (`AGENCY_COLORS`, `design.md` §5) —
+every other extra code still works, just drawn in gray.
+
 This repo doubles as a **boilerplate for future Pebble apps built with
 Claude**: `CLAUDE.md` contains the machine-facing development guide
 (environment rules, project conventions, doc links); this README covers the
