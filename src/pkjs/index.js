@@ -765,6 +765,17 @@ function buildRows(req, lat, lon, settings) {
       // alike, so a station starred from a deep "load more" page could never
       // be reached again from the watch. Those fall through as ordinary rows.
       var rows = favRows.map(function (r) { delete r._d; return r; });
+      // A favorite that fell through to the nearby block — past the hide line,
+      // or capped out of the favorites block by FAV_ROWS_MAX once the list
+      // grows past 10 — is still a favorite and must still wear its ★, or it
+      // is indistinguishable from the ordinary stops around it exactly when
+      // there are too many favorites to hold in your head. Keyed by the codes
+      // as they now stand, like `emitted` (the loop above may have migrated
+      // them). Hidden favorites stay unstarred on purpose: hiding is a
+      // deliberate "don't treat this as a favorite", and starring it there is
+      // how you bring it back.
+      var favKeys = {};
+      favs.forEach(function (f) { favKeys[f.agency + ":" + f.code] = 1; });
       stops.forEach(function (s) {
         if (emitted[s.agency + ":" + s.code]) return;
         // Same serviceless signal as favorites: agency map loaded but the
@@ -778,6 +789,7 @@ function buildRows(req, lat, lon, settings) {
             (noArr ? " · no arrivals" : dirLinesSuffix(infoFor(s.agency, s.code)))
         };
         if (noArr) row.m = 1;
+        if (favKeys[s.agency + ":" + s.code]) row.f = 1;
         rows.push(row);
       });
 
@@ -865,9 +877,24 @@ function buildMoreRows(req, lat, lon, settings) {
     // and getFavoriteStatus's far test divides by that same scale, so
     // `eff > hideM` is exactly its far:1 — no rail knowledge leaks over the
     // provider boundary here.
+    //
+    // Inside the hide line is necessary but not sufficient: buildRows keeps
+    // only the nearest FAV_ROWS_MAX in the favorites block and lets the rest
+    // fall through to its NEARBY block (starred). Skipping those here as well
+    // would drop stops page 0 already showed out of this list while `off`
+    // still counted them, so the next page would start past a stop the user
+    // never saw. Ranked off this search rather than getFavoriteStatus, so a
+    // favorite too far to turn up in it at all can in principle mis-rank the
+    // cut — it is also not in `stops`, so it can't affect the accounting.
     var hideM = (Number(settings.hideFavKm) || 19) * 1000;
-    var shownAsFav = function (s) {
+    var inFavBlock = {};
+    stops.filter(function (s) {
       return !!favKeys[s.agency + ":" + s.code] && s.eff <= hideM;
+    }).sort(function (x, y) { return x.eff - y.eff; })
+      .slice(0, FAV_ROWS_MAX)
+      .forEach(function (s) { inFavBlock[s.agency + ":" + s.code] = 1; });
+    var shownAsFav = function (s) {
+      return !!inFavBlock[s.agency + ":" + s.code];
     };
 
     var agSet = {};
