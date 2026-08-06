@@ -250,6 +250,12 @@ updated, dated, and out of committed files.
 Instead, end the message with the bare model name on its own line (e.g.
 `Fable 5` — whichever model actually did the work).
 
+**Subject line: 72 characters, hard maximum.** Count characters, not bytes
+(curly quotes and em dashes are multibyte, so `wc -c` lies). Over the limit,
+tighten the wording and push detail into the body, which has no limit; if it
+only fits by semicoloning two things together and *still* overflows, the
+commit is really two commits — split it.
+
 For stepping/breakpoints on the watch VM, see
 https://developer.repebble.com/guides/debugging/debugging-alloy-with-xsbug.md
 
