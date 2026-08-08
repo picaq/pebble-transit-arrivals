@@ -45,7 +45,7 @@ the firmware itself — see the escape hatch below.
 chunks ≈ 72 KB total, out of emery’s ~122 KB app RAM) via
 `ModdableCreationRecord`. Two gotchas discovered the hard way:
 
-1. If **any** of stack/slot/chunk is nonzero, **all three** must be —
+1. If **any** of stack/slot/chunk is nonzero, **all three** must be —
    otherwise the VM is silently never created and the app exits straight
    to the watchface with no error.
 2. Watch firmware **older than v4.21.0** (released 2026-07-03) has a bug
@@ -82,7 +82,7 @@ with code locations lives in the playbook §B, at the RESOLVED entry.
    only for rows actually scrolled into view, at most once per row, inside
    `render.begin()/end()`. Steady-state redraws allocate nothing.
 5. **The phone takes the location fix** (`navigator.geolocation` in pkjs).
-   The watch’s Location sensor and the `@moddable/pebbleproxy` are gone —
+   The watch’s Location sensor and the `@moddable/pebbleproxy` are gone —
    they cost watch code/heap and the phone’s GPS is the same fix anyway.
    The phone also **owns the favorites list** (watch sends a “fav” toggle
    request; the Clay page has per-favorite remove toggles), and favorites

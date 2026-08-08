@@ -130,7 +130,7 @@ established on real hardware in this repo:
   first — if free heap after imports is only a few KB, stop hunting leaks.
 - **Fifth recurrence (2026-07-07, same day): warm refreshes crashed while
   boot survived.** The watch retained the parsed rows payload
-  (`state.rowsSrc`) to re-derive ★ flags later — ~2-3 KB of chunk heap
+  (`state.rowsSrc`) to re-derive ★ flags later — ~2 – 3 KB of chunk heap
   held permanently, so the *second* response of a session parsed beside
   the first and tipped the heap. Boot always worked (nothing retained
   yet), making it look intermittent. Rule: **the watch keeps only display
@@ -203,7 +203,7 @@ established on real hardware in this repo:
   plus temporaries — and fragmentation raises the effective bar). Fix:
   manual pull-to-refresh now **releases the list before requesting**
   (`state.rows = []`, screen shows “Finding stops…” for the few seconds
-  the fresh compute takes) so the response parses beside an empty list —
+  the fresh compute takes) so the response parses beside an empty list —
   the boot condition, which has never faulted. (Refined same day into a
   **frame-hold**: paint one frame with a header “…” indicator, then release
   the rows — Poco only repaints on `begin()/end()`, so the framebuffer
@@ -217,7 +217,7 @@ established on real hardware in this repo:
   rows there. The list stays live and scrollable for the whole round trip;
   peak coexistence is rows + the ≤880 B wire string, which was never the
   crash point — the crash was always the parse spike beside retained rows.
-  The ARRIVALS screen kept the request-time frame-hold until 2026-07-14, when it too moved to release-before-parse — see the tenth-recurrence addendum below.) Lessons: (1)
+  The ARRIVALS screen kept the request-time frame-hold until 2026-07-14, when it too moved to release-before-parse — see the tenth-recurrence addendum below.) Lessons: (1)
   budget ~2× the
   wire size in free chunk for any watch-side JSON parse, and if that isn’t
   reliably available, **free the old data before the new data arrives**
@@ -244,7 +244,7 @@ established on real hardware in this repo:
     to release-before-**parse**, matching the list (ninth recurrence).*
     Motivation was the offline countdown feature: releasing at request time
     discarded the arrivals before a failed refresh could fall back to them,
-    so an offline refresh blanked to "Error". Now `fetchArrivals()` keeps
+    so an offline refresh blanked to “Error”. Now `fetchArrivals()` keeps
     `state.refreshing` only as an in-flight/busy marker and no longer clears
     `state.arrivals`; `protocol.onBeforeParse(raw)` releases them **only when
     `raw` contains `"type":"arrivals"`** (a real data response about to spike
@@ -256,8 +256,8 @@ established on real hardware in this repo:
     is parsed**; the release just moved to the moment of arrival so a
     no-big-parse failure can keep it.
   - *Addendum 2 (2026-07-15): the arrivals `draw()` self-gate was removed
-    entirely.* The freeze was never a memory defense — the onBeforeParse
-    release is — it only suppressed painting, and it **hid the arrivals for
+    entirely.* The freeze was never a memory defense — the onBeforeParse
+    release is — it only suppressed painting, and it **hid the arrivals for
     the whole 15 s `REQUEST_TIMEOUT_MS`** whenever the phone link was down
     (Bluetooth off), which read as a frozen app. The screen now stays live and
     ticking through the round trip like the list (a `…` header is the only
@@ -268,7 +268,7 @@ established on real hardware in this repo:
     so detection was abandoned for a time bound. Reconnect is handled by a
     `watch.addEventListener("connected", …)` re-fetch (nothing re-fetched
     before, so a reconnect needed an app restart). Memory model still unchanged
-    — release-before-parse holds; only the vestigial paint-gate is gone.
+ — release-before-parse holds; only the vestigial paint-gate is gone.
 - **Eleventh recurrence (2026-07-10, night, captured twice): the stale-
   list revalidation raced the user’s navigation — crash ~1 s after
   launch whenever the user selected a stop quickly, regardless of the
@@ -276,7 +276,7 @@ established on real hardware in this repo:
   user opened a stop → arrivals parsed → then the **immediate fresh:1
   revalidation response** (805 B) parsed beside the retained stale rows
   AND the arrivals, one second into boot with the chunk pool still
-  ungrown — instruments showed 172-340 B chunk free and 30+ GCs in that
+  ungrown — instruments showed 172 – 340 B chunk free and 30+ GCs in that
   second. Fix: the revalidation is **deferred** (`REVALIDATE_DELAY_MS`,
   5 s) and runs through the frame-hold `refreshList()` path (rows
   released before the parse), retrying while the user is off the list
@@ -306,7 +306,7 @@ established on real hardware in this repo:
   is the one response that MUST parse beside a retained list — so its
   size, not the list’s, is the variable to cut.** Captured: a 773 B
   more-rows page faulted with 748 B of chunk free beside the ~10-row
-  list. Appending can’t use the frame-hold (release-then-reload) shape —
+  list. Appending can’t use the frame-hold (release-then-reload) shape —
   the existing rows are the point. Fix (phone-only): `respond()` takes a
   per-call budget and `buildMoreRows` passes `MORE_BUDGET` = 400 B, sized
   from the measured numbers (~750 B worst-case free chunk at load-more
@@ -320,7 +320,7 @@ established on real hardware in this repo:
   free and 164 B of unallocated arena** (chunk 5,996 + slot 20,464 + stack
   6,144 = 32,604 of 32,768) — the slot pool needed to grow and could not.
   Slot capacity ratcheted up build-over-build within one evening (18,416 →
-  19,440 → 20,464) as recurrences 7-13 were fixed: **defense code is
+  19,440 → 20,464) as recurrences 7 – 13 were fixed: **defense code is
   bytecode and interned keys in the same arena as the heap** (keys count
   123 → 133 across the session). Each fix verifiably removed its trigger;
   their sum consumed the margin. When chunk is defended, the crash moves
@@ -371,7 +371,7 @@ established on real hardware in this repo:
   floor was `max(favCount, 1)`, so once the favorites block alone
   exceeded 880 B the loop stopped and the oversized payload shipped.
   Two user-visible symptoms, reported as one bug: every non-favorite was
-  shed (“local stops don’t load”), and the watch crashed “memory full” —
+  shed (“local stops don’t load”), and the watch crashed “memory full” —
   the BOOT parse of 1153 B survived (empty list, boot condition), the
   revalidation/refresh parse beside the retained rows faulted seconds
   later, every time (ninth-recurrence arithmetic: parse ≈ 2× wire needs
@@ -381,7 +381,7 @@ established on real hardware in this repo:
   `MAX_LIST_ROWS`), favorite names compacted to 16 chars on >8-row lists,
   and the budget made **absolute** — the shed floor is now 1 row, so
   favorites shed farthest-first as the last resort. Lessons: (1) any
-  “never shed / never drop” class must still bow to the wire budget —
+  “never shed / never drop” class must still bow to the wire budget —
   an exemption without its own cap is a payload bomb armed by user data
   growth (favorites accumulate); (2) a “feature stopped working” report
   (missing rows) and a crash can be the same defect — the shed loop was
@@ -415,28 +415,28 @@ established on real hardware in this repo:
   removing watch code needs a boot-verified install — delete it for
   free bytecode next time embedded code changes anyway.
 - **Seventeenth recurrence (2026-07-13): removing the list row cap crashed
-  hardware — the retained list IS the memory bound.** `MAX_LIST_ROWS` = 14 was
+  hardware — the retained list IS the memory bound.** `MAX_LIST_ROWS` = 14 was
   deleted by explicit user request (“pressing down at the end should load more
   no matter what”), leaving the retained row list unbounded while “load more”
   pages kept appending. Real hardware faulted “memory full” on a deep scroll.
   This is the thirteenth recurrence’s geometry restated: the load-more page is
   the one response that parses BESIDE the retained list, so every page loaded
-  shrinks the free chunk the NEXT page needs — an unbounded list is a slow-motion
+  shrinks the free chunk the NEXT page needs — an unbounded list is a slow-motion
   version of that fault, guaranteed to arrive at some depth. Two reporting
   details worth keeping: (1) it “took a long time”, which is what an
-  incrementally-tightening headroom looks like — not evidence of safety; (2) it was
+  incrementally-tightening headroom looks like — not evidence of safety; (2) it was
   observed at ~4 am, when few arrivals mean short subtitles and small payloads,
-  so it is the BEST case — daytime rows cost more heap each and it bites sooner.
-  Fix (watch): `LIST_RETAIN_MAX` = 24 with `trimRetained()` in `main.js` — loading
+  so it is the BEST case — daytime rows cost more heap each and it bites sooner.
+  Fix (watch): `LIST_RETAIN_MAX` = 24 with `trimRetained()` in `main.js` — loading
   stays unlimited, retention does not. Appending past the cap evicts the oldest
   NON-favorite rows off the top (favorites pinned at the head); selection and the
   scroll window shift with them. Pagination is driven by `state.moreOff`, a
-  monotonic cursor, NOT `rows.length` — otherwise eviction would rewind the cursor
+  monotonic cursor, NOT `rows.length` — otherwise eviction would rewind the cursor
   and re-fetch stops the user already passed. Lessons: (1) “unlimited scrolling”
   and “bounded memory” are reconcilable, but only by separating what you LOAD
-  from what you RETAIN — a sliding window gives both; (2) when a user asks to remove
+  from what you RETAIN — a sliding window gives both; (2) when a user asks to remove
   a memory bound, the answer is a window, not a deletion; (3) a crash that takes
-  a long time to arrive is still deterministic — “I scrolled a lot and it survived”
+  a long time to arrive is still deterministic — “I scrolled a lot and it survived”
   is not a measurement (§F is).
 - **Fix: request bigger VM heaps from `src/c/mdbl.c`** via
   `ModdableCreationRecord` (`stack`/`slot`/`chunk`, bytes). Rules from
@@ -473,7 +473,7 @@ established on real hardware in this repo:
   2. `MORE_BUDGET` 400 B (`buildMoreRows`) — bigger “load more” pages
      (was ~5 stops per Down-press). **RELAXED 2026-07-12** to 1000 B (a
      full 8-stop `MORE_PAGE`).
-  3. Serve-as-final rows cache, `ROWS_FRESH_MS` 3 min (`index.js`) —
+  3. Serve-as-final rows cache, `ROWS_FRESH_MS` 3 min (`index.js`) —
      could restore stale-while-revalidate for an always-instant boot
      list (the sixteenth recurrence’s trigger was arena saturation,
      gone at 72 KB), reviving the watch’s `scheduleRevalidate()`
@@ -481,7 +481,7 @@ established on real hardware in this repo:
   4. Frame-hold refresh (rows released pre-parse via
      `protocol.onBeforeParse`) and the 3 s `REFRESH_COOLDOWN_MS`
      (`main.js`) — smoother/snappier manual refresh.
-  Watch-side `scheduleRevalidate()` is dead code unless (3) revives it —
+  Watch-side `scheduleRevalidate()` is dead code unless (3) revives it —
   otherwise delete it with the next embedded change. Do not relax any of
   these casually mid-bugfix: each was pinned to a numbered recurrence
   above, and design.md §6/§7 documents the user-facing behavior each one
@@ -661,7 +661,7 @@ Beyond CLAUDE.md §11:
   instrumentation “App bytes free” / chunk numbers) to confirm headroom.
   With firmware ≥ v4.21.0 the `mdbl.c` creation record buys ~72 KB of VM,
   but don’t treat that as license to bloat — older firmware gets 32 KB.
-- Test on **real hardware** before declaring memory/render changes done —
+- Test on **real hardware** before declaring memory/render changes done —
   the emulator situation (§C) means emulator-only testing proves little for
   emery-specific behavior, and memory-churn bugs need real session-length
   usage (scroll a long list, open a busy stop, let it auto-refresh several

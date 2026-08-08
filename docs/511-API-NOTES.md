@@ -12,7 +12,7 @@ https://511.org/open-data/transit (spec PDF linked from that page).
 - Always pass `format=json`. Responses are gzip-compressed and **begin with
   a UTF-8 BOM (`\uFEFF`)** — strip it before `JSON.parse`.
 - **The agency-wide `StopMonitoring` call (no `stopcode`) is the fattest
-  endpoint here** — Muni is tens of thousands of visits, several MB. This app
+  endpoint here** — Muni is tens of thousands of visits, several MB. This app
   makes one per enabled agency to build the list subtitles and the favorites’
   has-arrivals check, so on a cold launch that fan-out dominates. Both the
   compacted stop lists and the derived stop-info maps are cached in phone
@@ -29,7 +29,7 @@ https://511.org/open-data/transit (spec PDF linked from that page).
 | AC | AC Transit |
 | GG | Golden Gate Transit (GF = Golden Gate Ferry) |
 | SM | SamTrans |
-| SB | San Francisco Bay Ferry (WETA; 13 terminals, real-time StopMonitoring works — many visits are schedule-only with `AimedArrivalTime` and no `Expected*`, which `getArrivals` already falls back to). Given BART/Caltrain reach via `RAIL_AGENCIES` |
+| SB | San Francisco Bay Ferry (WETA; 13 terminals, real-time StopMonitoring works — many visits are schedule-only with `AimedArrivalTime` and no `Expected*`, which `getArrivals` already falls back to). Given BART/Caltrain reach via `RAIL_AGENCIES` |
 | CT | Caltrain (example “extra” code) |
 
 Other ferries in the regional feed, addable via the **Extra agency codes**
@@ -55,7 +55,7 @@ GET /transit/stops?api_key=KEY&operator_id=SF&format=json
 Response is a SIRI/NeTEx envelope; stops live at
 `Contents.dataObjects.ScheduledStopPoint[]` with `id`, `Name`,
 `Location.{Latitude,Longitude}` (strings), and an `Extensions` object
-carrying `PlatformCode` / `ParentStation`. Muni returns ~3,500 stops —
+carrying `PlatformCode` / `ParentStation`. Muni returns ~3,500 stops —
 never forward this raw to the watch.
 
 ### A “stop” is a platform, and agencies disagree about how to say so
@@ -68,11 +68,11 @@ identical:
 |---|---|---|---|
 | **Muni** (`SF`) | 3,229 | no | **none at all** |
 | **BART** (`BA`) | 103 platforms → **50 stations** | no | yes, a real numeric stopcode |
-| **Caltrain** (`CT`) | 60 | **yes** — “Bayshore Caltrain Station *Northbound*” | yes, but a slug (`22nd_street`) |
+| **Caltrain** (`CT`) | 60 | **yes** — “Bayshore Caltrain Station *Northbound*” | yes, but a slug (`22nd_street`) |
 
 - **BART** addresses every *platform* as its own stop, and a platform id is
   **neither a station nor a direction**: “12th Street / Oakland City Center”
-  is three ids and “Balboa Park” two, all under one name — *and* 12th Street
+  is three ids and “Balboa Park” two, all under one name — *and* 12th Street
   and Daly City each have **two northbound platforms** (different line
   groups), while at 12 of the 50 stations (Bay Fair, Coliseum) a single
   platform serves **both** directions. 38 of the 50, though, are
@@ -80,7 +80,7 @@ identical:
 
   The usable axis is (station, direction), and `Extensions.ParentStation` is
   the way to query it: the parent id is itself a valid StopMonitoring
-  `stopcode` — `901809` (Balboa Park) returns all 43 upcoming trains, both
+  `stopcode` — `901809` (Balboa Park) returns all 43 upcoming trains, both
   directions, each tagged with `DirectionRef`. **A single platform’s feed is
   only *some* of that direction’s trains**, so per-platform queries cannot
   answer “what’s the next northbound train here”. `transit511.js` therefore
@@ -95,7 +95,7 @@ identical:
   `ParentStation`, and `Name` won’t do it either: all 12 subway stations do
   carry “Station”, but so do surface stops (`Ocean Ave/Balboa Park BART
   Station`, `San Jose Ave/Glen Park Station`, three `Daly City BART`
-  variants), and the station names themselves are inconsistent — `Metro
+  variants), and the station names themselves are inconsistent — `Metro
   Powell Station/Outbound`, `Van Ness Station Outbound`, `West Portal
   Station`, `Chinatown - Rose Pak Station`. That matters because the subway
   is BART-fast and the same lines on the surface are not, so
@@ -105,7 +105,7 @@ identical:
 
 Note 511 sometimes gives *genuinely identical names to different stops*:
 `San Jose Ave & Geneva Ave` is five distinct codes within 180 m, and
-`Market St & 5th St` is two. No naming scheme can separate those — only the
+`Market St & 5th St` is two. No naming scheme can separate those — only the
 distance and the serving-lines list differ.
 
 ### StopMonitoring (real-time predictions)
@@ -125,14 +125,14 @@ also included in this feed.
 `LineRef` values are agency-specific, and only *some* agencies mean “route”
 by it (`lineToken()` normalizes them):
 
-- **Muni / AC** — route numbers and letters (“38R”, “J”). Short already.
-- **BART** — names its lines by **color**: “Green”, “Yellow”, “Red”,
+- **Muni / AC** — route numbers and letters (“38R”, “J”). Short already.
+- **BART** — names its lines by **color**: “Green”, “Yellow”, “Red”,
   “Orange”, “Blue”, plus “Beige” for the Coliseum–OAK shuttle. The live
   values carry a direction suffix (“Yellow-N”). `transit511.js` compresses
   the five color-named lines to their initial letter in list-subtitle
   tokens and attaches a display-color code for the watch; arrivals keep the
   full name (`bartLineLetter()`).
-- **Caltrain** — publishes a **service pattern, not a route**: the only
+- **Caltrain** — publishes a **service pattern, not a route**: the only
   value seen is `"Local Weekday"` (and `PublishedLineName` is *empty*). A
   blanket 4-char cut rendered every Caltrain subtitle as the meaningless
   “Loca”; it now maps to Local / Ltd / Bullet, which is what a Caltrain
@@ -151,13 +151,13 @@ The direction vocabulary differs per agency (sampled live 2026-07-14):
 For Muni and BART this is the **only** place direction exists, so stop
 labels take their N/S/IB/OB token from here (`dirToken()`), folding
 Caltrain’s spelled-out “…bound” names onto the same vocabulary. A stop code
-reporting **both** directions gets no token — none would distinguish it.
+reporting **both** directions gets no token — none would distinguish it.
 
 **The agency-wide call (no `stopcode`) reports each visit against the
 PLATFORM it calls at.** For BART those `MonitoringRef`s are platform codes
 the collapsed stop list no longer contains, so `getStopInfo()` folds them
 onto the station through the same alias map that built the list. Without
-that fold every BART station is missing from the map — which the app reads
+that fold every BART station is missing from the map — which the app reads
 as “nothing is arriving”, dimming them all and stripping their line lists.
 
 ## Other available endpoints (not used yet, useful for features)

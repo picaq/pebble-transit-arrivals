@@ -21,7 +21,7 @@ other 511 operator (Caltrain, VTA, WETA ferries, …).
 The first six are built-in toggles in settings; `CC`, `CT`, and any other
 [511 operator code](https://511.org/open-data/transit) go in the “Extra
 agency codes” field. Only `SF`, `BA`, `CT`, `AC`, `GG`, `SM`, `SB`, and `CC`
-get a brand color on the list screen (`AGENCY_COLORS`, `design.md` §5) —
+get a brand color on the list screen (`AGENCY_COLORS`, `design.md` §5) —
 every other extra code still works, just drawn in gray.
 
 This repo doubles as a **boilerplate for future Pebble apps built with
@@ -216,7 +216,7 @@ foreground on the phone, or `pebble install` fails with
 
 Favorites appear at the top of the list with a ★, sorted nearest-first.
 They are stored on the phone. Starring/unstarring on the watch and the
-settings page’s show/hide toggles do the same thing: control visibility —
+settings page’s show/hide toggles do the same thing: control visibility —
 nothing is deleted, and a hidden favorite’s stop can still appear as an
 ordinary unstarred row when you’re physically near it (star it there to
 bring it back). Deleting a stop for good happens on the settings page:
@@ -255,11 +255,11 @@ walk. Muni’s surface stops are ordinary stops and are never scaled.
 
 For watch-side crashes, blank screens, and memory errors, the canonical
 guide is [docs/WATCH-DEBUGGING-PLAYBOOK.md](docs/WATCH-DEBUGGING-PLAYBOOK.md)
-— it classifies the known failure signatures and documents the debugging
+— it classifies the known failure signatures and documents the debugging
 workflow that actually works on this hardware. The list below covers
 setup/environment issues.
 
-- **“This project is very outdated, and cannot be handled by this SDK”** —
+- **“This project is very outdated, and cannot be handled by this SDK”** —
   `pebble-tool` requires a `wscript` file (and, for `"moddable"` projects, a
   `src/c/*.c` native entry point) to exist, even though this app is pure
   JS. Already present in this repo; if you deleted them, regenerate with
@@ -304,7 +304,7 @@ setup/environment issues.
   showed up despite plenty of *total* free heap — the real cause was
   fragmentation, not exhaustion. The concrete culprit found here: `main.js`’s
   `ellipsize()` used to trim long names one character at a time, doing a
-  fresh string concat *and* a fresh substring on every character trimmed —
+  fresh string concat *and* a fresh substring on every character trimmed —
   dozens of throwaway allocations per call, run for every row on every
   `draw()`. Busy stops (more/longer text) and heavy scrolling/refreshing (more
   `draw()` calls) made it measurably worse, matching what looked like a
