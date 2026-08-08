@@ -83,7 +83,12 @@ var DEFAULT_SETTINGS = {
 var FAVS_KEY = "favorites.v1";
 // Storage cap, not a display cap — unfavoriting hides rather than deletes,
 // so hidden records accumulate here until trashed from the settings page.
-var MAX_FAVORITES = 20;
+// Raised 20 → 100 (2026-08-06): getFavoriteStatus's fan-out cost is per
+// distinct AGENCY among your favorites (bounded by the ~7-8 supported
+// agencies), not per favorite, and each stored record is only tens of
+// bytes — this cap exists to bound a runaway-starring bug, not because 20
+// stops was ever a real ceiling.
+var MAX_FAVORITES = 100;
 
 function loadFavs() {
   try {

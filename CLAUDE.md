@@ -157,7 +157,7 @@ before inventing a size.
   Also available: `device.keyValue` and `device.files` for binary/large data.
 - Phone: `localStorage` in pkjs. Used here for settings (`settings.v1`),
   the favorites list (`favorites.v1` — [{agency, code, name, hide?}],
-  capped 10, edited from the watch’s “fav” request and the Clay page’s
+  capped 100, edited from the watch’s “fav” request and the Clay page’s
   show/hide toggles), the cached rows list (`rows.v1`), the 7-day stop caches
   (`stops511.v3.<AGENCY>` — v3 since BART stop codes became station-direction;
   `dropStaleStopCaches()` sweeps the orphaned v1/v2 keys), and the persisted
