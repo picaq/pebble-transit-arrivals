@@ -256,19 +256,31 @@ var ROWS_BUDGET = 1600;
 // §B, thirteenth recurrence) — revert to 400 for 32 KB firmware.
 var MORE_BUDGET = 1000;
 
+// Returns { rows, fix } — fix being the age in minutes of the location fix
+// these distances were measured from, recomputed on the way out so a list
+// built from a remembered position discloses the same staleness on a cached
+// serve as it did when it was fresh. Absent for a live fix.
 function loadRowsCache() {
   try {
     var e = JSON.parse(localStorage.getItem(ROWS_CACHE_KEY) || "null");
     if (!e || !e.rows || Date.now() - e.ts > ROWS_FRESH_MS) return null;
-    return e.rows;
+    return {
+      rows: e.rows,
+      fix: e.fixTs ? Math.max(1, Math.round((Date.now() - e.fixTs) / 60000)) : 0
+    };
   } catch (x) {
     return null;
   }
 }
 
-function saveRowsCache(rows) {
+function saveRowsCache(rows, fixAgeMin) {
   try {
-    localStorage.setItem(ROWS_CACHE_KEY, JSON.stringify({ ts: Date.now(), rows: rows }));
+    var e = { ts: Date.now(), rows: rows };
+    // Store WHEN the fix was taken, not how old it was — the cache outlives
+    // the moment, and an age frozen at build time would under-report by the
+    // serve window every time it was replayed.
+    if (fixAgeMin) e.fixTs = Date.now() - fixAgeMin * 60000;
+    localStorage.setItem(ROWS_CACHE_KEY, JSON.stringify(e));
   } catch (x) {
     // Quota — carry on; the watch just waits for the fresh compute.
   }
@@ -290,6 +302,107 @@ function clearRowsCache() {
     localStorage.removeItem(ROWS_CACHE_KEY);
   } catch (x) {
     // Nothing to do — a failed removal just means the next request rebuilds.
+  }
+}
+
+/* ------------------------------------------------------- last known fix */
+
+// The last successful GPS fix, kept so the nearby list survives GPS being
+// off, a denied permission, or a location provider that simply never
+// answers. Before this, a geolocation failure was terminal for the request:
+// both call sites logged and returned the bare string "No phone location",
+// even though findNearbyStops needs nothing from the network — the distance
+// loop in transit511 is pure math over the cached agency stop lists, so a
+// lat/lon is the ONLY missing ingredient for a fully offline list.
+//
+// Deliberately unversioned in its TTL: a fix from yesterday still ranks the
+// stops around home correctly, and the alternative (no list at all) is
+// strictly worse. Staleness is disclosed instead of enforced — the rows
+// response carries `fix`, the age in minutes, and the watch says so.
+var FIX_KEY = "lastfix.v1";
+
+function saveFix(lat, lon) {
+  try {
+    localStorage.setItem(FIX_KEY, JSON.stringify({ lat: lat, lon: lon, ts: Date.now() }));
+  } catch (x) {
+    // Quota — the fix is a convenience, not a requirement.
+  }
+}
+
+function loadFix() {
+  try {
+    var f = JSON.parse(localStorage.getItem(FIX_KEY) || "null");
+    return f && typeof f.lat === "number" && typeof f.lon === "number" ? f : null;
+  } catch (x) {
+    return null;
+  }
+}
+
+// Every location request in this file goes through here. cb(lat, lon, ageMin)
+// where ageMin is 0 for a live fix and the age in minutes of a remembered
+// one; cb(null) when there is nothing at all to work with.
+//
+// Three escalating attempts, cheapest last:
+//  1. The normal request. enableHighAccuracy:false already asks the OS for
+//     the coarse wifi/cell fix rather than warming up the GPS radio.
+//  2. On failure, one retry that accepts anything the OS has lying around
+//     (maximumAge an hour, timeout short) — this is what answers when GPS
+//     is off but the phone has been on wifi all day.
+//  3. The remembered fix from a previous run.
+function locate(cb) {
+  var live = { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 };
+  var anyCached = { enableHighAccuracy: false, timeout: 3000, maximumAge: 60 * 60 * 1000 };
+
+  function ok(pos) {
+    saveFix(pos.coords.latitude, pos.coords.longitude);
+    cb(pos.coords.latitude, pos.coords.longitude, 0);
+  }
+
+  function fallback() {
+    var f = loadFix();
+    if (!f) {
+      console.log("geolocation failed and no remembered fix");
+      return cb(null);
+    }
+    var ageMin = Math.max(0, Math.round((Date.now() - f.ts) / 60000));
+    console.log("geolocation failed: using remembered fix (" + ageMin + "m old)");
+    cb(f.lat, f.lon, ageMin);
+  }
+
+  navigator.geolocation.getCurrentPosition(ok, function (geoErr) {
+    console.log("geolocation failed: " + (geoErr && geoErr.message) + " — retrying coarse");
+    navigator.geolocation.getCurrentPosition(ok, fallback, anyCached);
+  }, live);
+}
+
+/* -------------------------------------------------- the pinned stop and
+                                                        the launcher line */
+
+// The stop the watch asked us to keep on the launcher: {a, c, n, l, ts},
+// where `l` is a single route name when one was highlighted before exiting,
+// and 0 for "every route at this stop".
+//
+// The phone's own note of what the watch pinned. The watch does not depend on
+// it — it keeps its own record, which is the copy that survives a dead phone —
+// but the phone knowing which stop matters keeps that stop's arrivals cached
+// in preference to others.
+var PIN_KEY = "pin.v1";
+
+function loadPin() {
+  try {
+    var p = JSON.parse(localStorage.getItem(PIN_KEY) || "null");
+    return p && p.a && p.c ? p : null;
+  } catch (x) {
+    return null;
+  }
+}
+
+function savePin(p) {
+  try {
+    if (p) localStorage.setItem(PIN_KEY, JSON.stringify(p));
+    else localStorage.removeItem(PIN_KEY);
+  } catch (x) {
+    // Quota — the watch's own copy is the one that matters anyway.
   }
 }
 
@@ -678,7 +791,7 @@ function stopLabel(rawName, info) {
 // serving lines (dirLinesSuffix, which spells the direction out again), both
 // from the cached agency-wide stop-info map.
 // All formatting lives here because watch code costs watch heap (playbook §B).
-function buildRows(req, lat, lon, settings) {
+function buildRows(req, lat, lon, settings, fixAgeMin) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
     // Hidden favorites cost nothing: no status lookups, no payload, no spot
@@ -828,12 +941,16 @@ function buildRows(req, lat, lon, settings) {
       }).join(", "));
 
       var body = { type: "rows", rows: rows };
+      // Age of the fix these distances were measured from, in minutes, and
+      // only when it is not the live one. The watch footers it rather than
+      // passing off a remembered position as where you are standing.
+      if (fixAgeMin) body.fix = fixAgeMin;
       // Budgeting to ROWS_BUDGET happens in respond(), on the final serialized
       // payload. Persist the list first for instant stale-while-revalidate
       // replies (the cache may hold a row or two more than fits one reply;
       // stale serves re-shed in respond). Only the normal page-0 list is
       // cached ("load more" pages go through buildMoreRows).
-      saveRowsCache(rows);
+      saveRowsCache(rows, fixAgeMin);
       respond(req.id, body);
     };
 
@@ -877,7 +994,7 @@ function buildRows(req, lat, lon, settings) {
 // wider MORE_RADIUS_M search. No favorites block and no stale cache — the
 // watch appends these to its list. An empty rows array means there are no
 // more stops (the watch then stops asking). Mirrors buildRows' subtitles.
-function buildMoreRows(req, lat, lon, settings) {
+function buildMoreRows(req, lat, lon, settings, fixAgeMin) {
   transit.findNearbyStops(lat, lon, settings, function (err, stops) {
     if (err) return respond(req.id, { type: "error", message: err.message });
     var favKeys = {};
@@ -951,6 +1068,7 @@ function buildMoreRows(req, lat, lon, settings) {
       });
       rows = rows.slice(Number(req.off) || 0); // drop the ones already on the watch
       var body = { type: "rows", rows: rows };
+      if (fixAgeMin) body.fix = fixAgeMin;
       // Budgeted to MORE_BUDGET in respond() (sheds in place, so log after).
       respond(req.id, body, MORE_BUDGET);
       console.log("more rows: " + rows.length + " beyond off " + req.off);
@@ -999,45 +1117,65 @@ function handleRequest(req) {
       // Reach past the default candidate ceiling far enough for one more page.
       wide.maxStops = Number(req.off) + MORE_PAGE + 2;
       wide.hardCeiling = Number(req.off) + MORE_PAGE + 2;
-      navigator.geolocation.getCurrentPosition(
-        function (pos) {
-          buildMoreRows(req, pos.coords.latitude, pos.coords.longitude, wide);
-        },
-        function (geoErr) {
-          console.log("geolocation failed: " + (geoErr && geoErr.message));
-          respond(req.id, { type: "error", message: "No phone location" });
-        },
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 }
-      );
+      locate(function (lat, lon, ageMin) {
+        if (lat === null) {
+          return respond(req.id, { type: "error", message: "No phone location" });
+        }
+        buildMoreRows(req, lat, lon, wide, ageMin);
+      });
       return;
     }
     // Instant cached reply, served as FINAL — no stale:1, so the watch
     // never schedules the revalidation follow-up that crashed it (see the
     // rows cache comment above).
     if (!req.fresh) {
-      var cachedRows = loadRowsCache();
-      if (cachedRows) {
-        console.log("req nearby: served cached (" + cachedRows.length + " rows)");
-        return respond(req.id, { type: "rows", rows: cachedRows });
+      var cached = loadRowsCache();
+      if (cached) {
+        console.log("req nearby: served cached (" + cached.rows.length + " rows)");
+        var cachedBody = { type: "rows", rows: cached.rows };
+        if (cached.fix) cachedBody.fix = cached.fix;
+        return respond(req.id, cachedBody);
       }
     }
     if (req.mig) importLegacyFavs(req.mig);
     console.log("req nearby: locating...");
-    navigator.geolocation.getCurrentPosition(
-      function (pos) {
-        buildRows(req, pos.coords.latitude, pos.coords.longitude, settings);
-      },
-      function (geoErr) {
-        console.log("geolocation failed: " + (geoErr && geoErr.message));
-        respond(req.id, { type: "error", message: "No phone location" });
-      },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 }
-    );
-  } else if (req.cmd === "arrivals") {
-    transit.getArrivals(req.agency, req.stop, settings.apiKey, req.lim || 6, function (err, arrivals) {
-      if (err) return respond(req.id, { type: "error", message: err.message });
-      respond(req.id, { type: "arrivals", stop: req.stop, arrivals: arrivals });
+    locate(function (lat, lon, ageMin) {
+      if (lat === null) {
+        return respond(req.id, { type: "error", message: "No phone location" });
+      }
+      buildRows(req, lat, lon, settings, ageMin);
     });
+  } else if (req.cmd === "arrivals") {
+    transit.getArrivals(req.agency, req.stop, settings.apiKey, req.lim || 6, function (err, arrivals, asof) {
+      if (err) return respond(req.id, { type: "error", message: err.message });
+      respond(req.id, {
+        type: "arrivals",
+        stop: req.stop,
+        // When these were fetched. The watch turns each `min` back into an
+        // absolute time against this stamp, so a list served from cache or
+        // from disk after a network failure still counts down truthfully
+        // instead of restarting from the moment it happened to arrive.
+        asof: asof || Date.now(),
+        arrivals: arrivals
+      });
+    });
+  } else if (req.cmd === "pin") {
+    // The watch is leaving. Either it is pinning the stop on screen, or a
+    // plain Back off the list said to stop showing anything at all.
+    //
+    // The watch waits for this reply before calling watch.exit(), because
+    // exiting tears pkjs down and an unanswered reload never reaches the
+    // firmware. Reply even on the clear path so it is never left hanging.
+    if (req.clear) {
+      savePin(null);
+      return respond(req.id, { type: "pin", pinned: 0 });
+    }
+    var pin = {
+      a: String(req.a), c: String(req.c), n: String(req.n || req.c),
+      l: req.l ? String(req.l) : 0, ts: Date.now()
+    };
+    savePin(pin);
+    respond(req.id, { type: "pin", pinned: 1 });
   } else if (req.cmd === "fav") {
     // The watch's Select sets VISIBILITY, never deletes: unfavoriting hides
     // the saved record (star it again — even via its unstarred nearby row —
