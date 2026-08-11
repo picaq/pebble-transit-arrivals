@@ -6,6 +6,11 @@
  *              Select opens arrivals for the highlighted stop.
  *   ARRIVALS — live predictions for one stop, auto-refreshes every 60 s.
  *              Select toggles ★ favorite. Back returns to the list.
+ *              Holding Down reveals a route cursor (the other routes dim).
+ *              Holding Back, or tapping it twice, PINS the stop and leaves:
+ *              the times keep counting down on the launcher afterwards, and
+ *              the stop is stored here (pinned.js) so the next launch opens
+ *              on it even with the phone dead.
  *
  * Rendering uses Poco (immediate-mode drawing) rather than Piu because a
  * scrolling list with full redraws is simpler and uses less RAM this way.
@@ -19,6 +24,7 @@ import Poco from "commodetto/Poco";
 import Button from "pebble/button";
 import Timer from "timer";
 import protocol from "./protocol";
+import { savePin, loadPin, clearPin } from "./pinned";
 
 // NOTE ON CODE SIZE: this module's compiled bytecode loads into the same
 // 32 KB XS arena as the runtime heap (playbook §B) — keep the watch side
@@ -55,6 +61,24 @@ const WHITE = render.makeColor(255, 255, 255);
 const ACCENT = render.makeColor(0, 85, 255);   // header / selection
 const GRAY = render.makeColor(120, 120, 120);
 const SUB_GRAY = render.makeColor(60, 60, 60); // subtitles/destination text — higher contrast than GRAY
+// Every color has a dimmed twin: the same color at 50% opacity over the white
+// background, which is just the midpoint between it and white. Hue survives, so
+// a backgrounded Red is still recognisably red and the color coding never
+// stops working — only the contrast drops.
+//
+// Two earlier attempts replaced the color instead of fading it, and both were
+// wrong on hardware: a flat 175,175,175 washed out (the physical panel renders
+// light grays far weaker than a PNG of the framebuffer, so never judge a gray
+// on this watch from a screenshot), and a flat SUB_GRAY threw the line colors
+// away entirely, which read worse than either.
+//
+// The blend must be precomputed — draw() may not allocate, and makeColor is an
+// allocation. Every DIM constant below is built once, at module load.
+function dim50(r, g, b) {
+  return render.makeColor((r + 255) >> 1, (g + 255) >> 1, (b + 255) >> 1);
+}
+const BLACK_DIM = dim50(0, 0, 0);
+const SUB_GRAY_DIM = dim50(60, 60, 60);
 
 // Distinguishable colors cycled across route lines so easily-confused
 // numbers (e.g. "38" vs "38R") read apart at a glance.
@@ -66,11 +90,22 @@ const LINE_COLORS = [
   render.makeColor(210, 110, 0),
   render.makeColor(0, 130, 130)
 ];
+// Same six at 50% over white, index for index — keep the two lists in step.
+const LINE_COLORS_DIM = [
+  dim50(0, 90, 200),
+  dim50(200, 30, 30),
+  dim50(0, 140, 60),
+  dim50(140, 40, 180),
+  dim50(210, 110, 0),
+  dim50(0, 130, 130)
+];
 
-function colorForLine(line) {
+// Returns the INDEX so the full and dimmed variants stay in step; a route's
+// color must not change depending on which one is asked for.
+function colorIndexForLine(line) {
   let hash = 0;
   for (let i = 0; i < line.length; i++) hash = (hash * 31 + line.charCodeAt(i)) | 0;
-  return LINE_COLORS[Math.abs(hash) % LINE_COLORS.length];
+  return Math.abs(hash) % LINE_COLORS.length;
 }
 
 // The phone may attach a color code ("k") to an arrival when the line has a
@@ -83,6 +118,13 @@ const LINE_COLOR_CODES = {
   r: render.makeColor(200, 30, 30),
   o: render.makeColor(210, 110, 0),
   b: render.makeColor(0, 90, 200)
+};
+const LINE_COLOR_CODES_DIM = {
+  g: dim50(0, 140, 60),
+  y: dim50(215, 170, 0),
+  r: dim50(200, 30, 30),
+  o: dim50(210, 110, 0),
+  b: dim50(0, 90, 200)
 };
 
 // The agency code leading each list subtitle draws in that agency's own brand
@@ -233,11 +275,41 @@ const HINT_NOT_FAV = "Select to ★ favorite";
 // tick (see buildOfflineText), so the whole string is precomputed off the draw
 // path. DIR_SEP is the same " · " the list uses.
 const OFFLINE_PREFIX = "Offline" + DIR_SEP + "updated ";
+// A response older than this was served from the phone's own store after a
+// failed 511 call, not fetched — so it gets the offline footer even though the
+// round trip succeeded. Comfortably above the phone's 45 s arrivals cache,
+// which is a deliberate rate-limit measure and still counts as live.
+const OFFLINE_STALE_MS = 90000;
 // Unfavoriting requires HOLDING Select this long (favoriting stays a tap —
 // it's harmless and reversible; accidental unfavorites are what stung).
 // Fires AT the threshold, mid-hold, via a timer — the footer flips while
 // the button is still down, so the user knows it took before releasing.
 const LONGPRESS_MS = 500;
+// Two Back taps inside this window pin the stop and leave. The hold below
+// does the same thing, but the firmware ALSO exits on a held Back once "back"
+// is registered (see the button handler), so the hold is a race we can only
+// win by acting first — the double tap is the gesture that always works.
+// Back never pins any more. Holding it was a race against the firmware's own
+// hold-to-exit and the race is UNWINNABLE — at 500 ms nothing happened, at
+// 250 ms nothing happened, and the verdict from hardware was blunt: "the back
+// button to clear always overrides the press and hold" (2026-08-11). Pinning
+// moved to Select, which fights nothing, and leaving-while-pinned moved to a
+// two-button chord that cannot be confused with either.
+// Footer while a route cursor is showing, telling you what leaving will do.
+const HINT_SELECTED = "Select to pin this route";
+// Shown once Select has committed the route: choosing is over, so the hint
+// turns to how to leave while keeping it.
+const HINT_PINNED = "Pinned · Back+Up to exit";
+// Header title on the LIST when the distances came from a remembered location
+// fix rather than a live one (rows response `fix`); the age is appended per
+// response. It replaces the app name in the bar rather than taking a footer,
+// because the list has no spare band — five 40 px rows fill the screen below
+// the header, and anything drawn at the bottom lands on the last row's
+// subtitle. Losing the app name for as long as this is true costs nothing:
+// you know which app you opened, and this is the one thing about the list
+// that is not what it appears to be.
+const FIX_PREFIX = "Location ";
+const FIX_SUFFIX = "m old";
 
 /* ----------------------------------------------------------------- state */
 
@@ -269,6 +341,45 @@ const state = {
                               // OFFLINE_FALLBACK_MS to show the offline countdown
                               // without waiting out the 15 s request timeout
   arrTop: 0,                   // first visible arrival (scroll window)
+  selLine: "",                // the route the cursor is on, "" = no cursor. This,
+                              // not arrSel, is what draw() compares against: the
+                              // cursor picks a ROUTE, and a route arrives more
+                              // than once, so every 14 on the screen stays lit
+                              // and only the other routes dim. Highlighting the
+                              // single row under the cursor read as "this
+                              // departure", which is not the thing being pinned
+  selLocked: false,           // the route choice is COMMITTED (Select pressed).
+                              // The highlight stays and the other routes stay
+                              // dimmed, but Up/Down go back to scrolling the
+                              // list instead of moving the cursor — otherwise
+                              // choosing a route costs you the ability to
+                              // scroll a stop with more arrivals than fit
+  arrSel: -1,                 // route cursor on the ARRIVALS screen, -1 = none.
+                              // Hidden by default: the screen is a readout, not
+                              // a menu, and a cursor you never asked for implies
+                              // a choice to make. Holding Down reveals it; the
+                              // selected route then draws normally while the
+                              // others DIM (dimming the rest, rather than
+                              // highlighting one, keeps the row you care about
+                              // rendered exactly as you were already reading it)
+  fixText: "",                // precomputed "Last known location · Nm" LIST
+                              // footer when the phone had no live GPS fix;
+                              // "" when the fix was live (off the draw path)
+  pinMsg: "",                 // one-line footer confirmation after Select pins
+                              // a route; outranks every other footer, cleared
+                              // by the next button press
+  backHeld: false,            // Back is down right now  ┐ together they are
+  upHeld: false,              // Up is down right now     ┘ the exit chord
+  chordFired: false,          // the chord ran: swallow the release that follows
+  pinPending: false,          // in-flight guard for the pin-and-exit round trip
+  pinned: false,              // a stop is on the launcher right now, so a plain
+                              // Back off the list has something to clear
+  lastStop: null,             // the stop the last arrivals screen showed, kept
+                              // by closeArrivals so the second tap of a Back
+                              // double tap (which lands on the LIST) still
+                              // knows what it is pinning. The stop object only
+                              // — its arrivals are released, per playbook §B
+  lastLine: 0,                // the route its cursor was on, if any
   arrLimit: ARR_DEFAULT,       // how many arrivals we ask the phone for
   arrivalsPending: false,     // in-flight guard — see fetchArrivals()
   arrivalsStatus: "Loading…",
@@ -290,6 +401,8 @@ const state = {
   refrOkAt: 0,                // manual-refresh cooldown deadline (Date.now() ms)
   revalTimer: null,           // deferred stale-list revalidation (scheduleRevalidate)
   selTimer: null,             // armed while Select is held on a ★ stop; fires the unfavorite
+  downTimer: null,            // armed while Down is held on the arrivals screen;
+                              // fires the route-cursor reveal at LONGPRESS_MS
   refreshing: false,          // frame-hold (ARRIVALS screen): display data is
                               // RELEASED (heap!) but the last frame stays on
                               // screen with a "…" header indicator; draw()
@@ -484,7 +597,7 @@ function draw() {
 
   if (state.mode === MODE_LIST) {
     fitVisibleRows(); // no-op once the visible rows are fitted
-    drawHeader("Transit Minute", state.listRefreshing);
+    drawHeader(state.fixText || "Transit Minute", state.listRefreshing);
     if (!state.rows.length) {
       render.drawText(state.status, fontSub, GRAY, 8, HEADER_H + 12);
     } else {
@@ -577,25 +690,43 @@ function draw() {
           if (a.min % 10 === 1) a.minX += 2;
           a.minDirty = false;
         }
+        // Route cursor: the row under it draws exactly as it always does and
+        // every OTHER row dims. Dimming the rest rather than highlighting one
+        // means the row you care about is still rendered the way you were
+        // already reading it — a selection bar would recolor it instead.
+        // Three comparisons against constants; allocates nothing.
+        const off = state.selLine !== "" && a.line !== state.selLine;
+        const minFg = off ? BLACK_DIM : BLACK;
         if (a.min <= 0) {
           // Kerned split draw + stroke-completing sliver; see the NOW_*
           // constants. Allocation-free: fixed literals and constants.
-          render.drawText("No", fontNarrow, BLACK, NOW_NO_X, y + NARROW_Y_SHIFT);
-          render.drawText("w", fontNarrow, BLACK, NOW_W_X, y + NARROW_Y_SHIFT);
-          render.fillRectangle(BLACK, NOW_SLIVER_X, y + NARROW_Y_SHIFT + 3, 1, 14);
+          render.drawText("No", fontNarrow, minFg, NOW_NO_X, y + NARROW_Y_SHIFT);
+          render.drawText("w", fontNarrow, minFg, NOW_W_X, y + NARROW_Y_SHIFT);
+          render.fillRectangle(minFg, NOW_SLIVER_X, y + NARROW_Y_SHIFT + 3, 1, 14);
         } else {
-          render.drawText(a.minStr, a.minFont, BLACK,
+          render.drawText(a.minStr, a.minFont, minFg,
                           a.minX, a.minFont === fontNarrow ? y + NARROW_Y_SHIFT : y);
         }
-        render.drawText(a.lineText, fontLine, a.lineColor, ARRIVAL_TEXT_X, y);
-        render.drawText(a.destText, fontSub, SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
+        render.drawText(a.lineText, fontLine, off ? a.lineDim : a.lineColor, ARRIVAL_TEXT_X, y);
+        render.drawText(a.destText, fontSub, off ? SUB_GRAY_DIM : SUB_GRAY, ARRIVAL_TEXT_X, y + 26);
         y += ARRIVAL_ROW_H;
       }
     }
     // Footer: while showing last-known arrivals offline, say so and how stale
     // (state.offlineText, precomputed in tickArrivals); otherwise the favorite
     // hint. Both cached — draw() never allocates or reads storage.
-    if (state.offline) {
+    if (state.pinMsg) {
+      // Confirmation of the press you just made: the highest-priority thing
+      // the footer can say, and cleared by the next press.
+      render.drawText(state.pinMsg, fontSub, GRAY, 6, render.height - 18);
+    } else if (state.selLine) {
+      // A cursor is a choice you just made, so the footer says what it buys —
+      // it outranks both the offline age and the favorite hint for as long as
+      // it is showing. Once committed it says how to leave instead of how to
+      // choose, since choosing is done.
+      render.drawText(state.selLocked ? HINT_PINNED : HINT_SELECTED,
+                      fontSub, GRAY, 6, render.height - 18);
+    } else if (state.offline) {
       render.drawText(state.offlineText, fontSub, GRAY, 6, render.height - 18);
     } else if (state.stop) {
       render.drawText(state.stopIsFav ? HINT_IS_FAV : HINT_NOT_FAV,
@@ -672,12 +803,20 @@ function updateClock() {
 // the same absolute instant the phone computed it from (serveArrivals, phone).
 function prepareArrivals(list) {
   for (const a of list) {
-    a.whenMs = state.arrivalsAt + a.min * 60000;
+    // The pinned record (pinned.js) already carries absolute times — it stored
+    // whenMs rather than a minute count precisely so it could be reopened at
+    // any age. Deriving one here would overwrite it with the fetch stamp and
+    // collapse every arrival onto the same instant.
+    if (a.whenMs === undefined) a.whenMs = state.arrivalsAt + a.min * 60000;
     a.minStr = a.min <= 0 ? "Now" : String(a.min);
     // The phone does not cap `min`, so infrequent/late-night service really
     // does send 100+; three Leco-Bold 26 digits run into the route text.
     a.minFont = (a.min <= 0 || a.min > 99) ? fontNarrow : fontBig;
-    a.lineColor = (a.k && LINE_COLOR_CODES[a.k]) || colorForLine(a.line);
+    const ci = colorIndexForLine(a.line);
+    a.lineColor = (a.k && LINE_COLOR_CODES[a.k]) || LINE_COLORS[ci];
+    // Its 50%-over-white twin, precomputed here so the cursor can background a
+    // route without draw() computing (or allocating) anything.
+    a.lineDim = (a.k && LINE_COLOR_CODES_DIM[a.k]) || LINE_COLORS_DIM[ci];
   }
   return list;
 }
@@ -750,7 +889,7 @@ function fetchNearby(fresh) {
   state.nearbyPending = true;
   if (state.rows.length) {
     state.listRefreshing = true;
-    drawHeaderBusy("Transit Minute");
+    drawHeaderBusy(state.fixText || "Transit Minute");
   } else {
     state.status = "Finding stops…";
     draw();
@@ -760,6 +899,11 @@ function fetchNearby(fresh) {
       state.nearbyPending = false;
       state.listRefreshing = false;
       const isStale = !!resp.stale;
+      // resp.fix: the phone could not get a live position and ranked these
+      // stops from a remembered one, N minutes old. Say so rather than let a
+      // list built from where you were an hour ago read as where you are.
+      // Built here, once per response, so draw() never allocates.
+      state.fixText = resp.fix ? FIX_PREFIX + resp.fix + FIX_SUFFIX : "";
       setRowsFromResponse(resp.rows || []);
       state.status = state.rows.length ? "" : "No stops nearby";
       draw();
@@ -893,6 +1037,7 @@ function openArrivals(stop) {
   state.offline = false;          // fresh stop — no stale data carried over
   state.arrTop = 0;               // top of the scroll window for this stop
   state.arrLimit = ARR_DEFAULT;   // reset "load more" growth per stop
+  setArrSel(-1);                  // no route cursor until Down is held here
   // Reset the guard so a still-in-flight request for a previous stop can't
   // block this screen's first fetch (its late response is ignored by the
   // identity check in fetchArrivals). Same for a frame-hold left by that
@@ -968,14 +1113,37 @@ function fetchArrivals() {
         state.offlineFallbackTimer = null;
       }
       if (state.mode !== MODE_ARRIVALS || state.stop !== requested) return;
-      // Live data landed — stamp the anchor BEFORE prepareArrivals (it derives
-      // each arrival's whenMs from arrivalsAt) and clear any offline state.
-      state.arrivalsAt = Date.now();
-      state.offline = false;
+      // Data landed — stamp the anchor BEFORE prepareArrivals (it derives each
+      // arrival's whenMs from arrivalsAt) and clear any offline state.
+      //
+      // resp.asof is when the PHONE fetched these, which is not when they
+      // arrived here: it answers from a 45 s cache, and when the network is
+      // down it answers from disk with predictions that may be minutes old.
+      // Anchoring to Date.now() in that case restarted every countdown from
+      // scratch, so a four-minute-old "3" showed as "3" instead of "Now" and
+      // the bus was gone before the number moved. Fall back to now only for a
+      // phone build old enough not to send it.
+      state.arrivalsAt = resp.asof || Date.now();
+      // Data the phone had to reach into its own cache for is not live, and
+      // the footer says so — same offline countdown, honestly labelled.
+      state.offline = !!resp.asof && Date.now() - resp.asof > OFFLINE_STALE_MS;
       state.arrivals = prepareArrivals(resp.arrivals || []);
       // Keep the scroll window valid if a refresh returned fewer rows.
       if (state.arrTop >= state.arrivals.length) state.arrTop = 0;
+      // Keep the cursor on the ROUTE it was on, wherever that route landed
+      // in the refreshed list; drop it if that route is no longer running.
+      if (state.selLine) {
+        let at = -1;
+        for (let i = 0; i < state.arrivals.length; i++) {
+          if (state.arrivals[i].line === state.selLine) { at = i; break; }
+        }
+        setArrSel(at);
+      }
       state.arrivalsStatus = state.arrivals.length ? "" : "No arrivals";
+      // A stale-but-successful response needs its footer built here: the
+      // offline text is normally produced by tickArrivals, which will not run
+      // until the next minute boundary.
+      if (state.offline) buildOfflineText(Date.now());
       draw();
     })
     .catch(err => {
@@ -1031,11 +1199,108 @@ function toggleFav() {
     .catch(() => { state.favPending = false; });
 }
 
+// Pin the route under the cursor. Select does this, and it does NOT leave the
+// app: pinning and leaving are now separate acts (Back+Up leaves), because
+// every attempt to fold them into one Back gesture lost to the firmware.
+//
+// Two things are written, neither depending on the other:
+//   1. pin.v1 on the watch (rememberStop) — the copy that survives a dead
+//      phone, and the thing that reopens this screen on the next launch.
+function pinRoute() {
+  rememberStop();
+  state.pinned = true;
+  // Commit the choice: the route stays highlighted and the rest stay dimmed,
+  // but Up and Down go back to scrolling. Select NEVER exits the app — pinning
+  // and leaving are separate acts (Back+Up leaves).
+  state.selLocked = true;
+  state.pinMsg = "Pinned";
+  // Tell the phone too, so its own record matches; nothing depends on the
+  // answer, so do not hold anything open for it.
+  const p = loadPin();
+  if (p) protocol.setPin(p.stop.agency, p.stop.code, p.stop.name, p.line || 0);
+  draw();
+}
+
+// Leave from the LIST: a plain Back means "done", so it also takes the
+// launcher line away. Only worth a round trip when there is something to
+// take away — otherwise exit immediately, exactly as it always has.
+function exitApp() {
+  if (state.pinPending) return;
+  // The stored record goes whether or not anything reached the launcher: any
+  // arrivals screen visited this session wrote one (rememberStop), and
+  // quitting from the root means the next launch should open on the list,
+  // the way it did before this feature existed.
+  if (state.lastStop) {
+    clearPin();
+    state.lastStop = null;
+  }
+  if (state.pinned) {
+    protocol.clearPin();    // fire and forget, as above
+    state.pinned = false;
+  }
+  watch.exit();
+}
+
+// Put the route cursor on `i`, or clear it with -1. Because the cursor picks a
+// ROUTE, moving it means moving to the next row whose line DIFFERS — stepping
+// row by row would visibly do nothing while it crossed the other departures of
+// the route already selected.
+function setArrSel(i) {
+  if (i < 0 || !state.arrivals.length) {
+    state.arrSel = -1;
+    state.selLine = "";
+    state.selLocked = false;
+    return;
+  }
+  state.arrSel = i;
+  state.selLine = state.arrivals[i].line;
+  if (state.arrSel < state.arrTop) state.arrTop = state.arrSel;
+  else if (state.arrSel >= state.arrTop + VISIBLE_ARRIVALS) {
+    state.arrTop = state.arrSel - VISIBLE_ARRIVALS + 1;
+  }
+}
+
+// What a Back TAP means on the arrivals screen: put the route cursor away if
+// one is showing (the change you most recently made, and undoing it should not
+// also cost you the screen), otherwise return to the list.
+function backTap() {
+  if (state.selLine) { setArrSel(-1); draw(); }
+  else closeArrivals();
+}
+
+function moveArrSel(dir) {
+  let i = state.arrSel;
+  for (;;) {
+    i += dir;
+    if (i < 0 || i >= state.arrivals.length) return; // no further route that way
+    if (state.arrivals[i].line !== state.selLine) break;
+  }
+  setArrSel(i);
+  draw();
+}
+
+// Write the stop on screen to watch storage, while its arrivals are still
+// here to write. Called by the FIRST thing Back does, before it decides what
+// else Back means, so the record exists no matter which of Back's three
+// meanings this press turns out to have.
+//
+// Writing on every Back rather than only on the pin gesture is deliberate:
+// this IS the most recently looked at stop either way, the write is one small
+// string, and a plain Back off the list clears it again (exitApp), so
+// deliberately quitting still leaves nothing behind.
+function rememberStop() {
+  if (!state.stop) return;
+  state.lastLine = state.selLine || 0;
+  state.lastStop = state.stop;
+  savePin(state.stop, state.arrivals, state.arrivalsAt, state.lastLine);
+}
+
 function closeArrivals() {
   stopRefreshTimer();
   state.mode = MODE_LIST;
   state.stop = null;
   state.arrivals = [];
+  setArrSel(-1);                  // the cursor belongs to the stop you left
   state.offline = false;          // leaving the arrivals screen clears the flag
   // Clear the in-flight marker and the offline fallback for the screen we are
   // leaving; an abandoned request's late response is ignored by its identity
@@ -1046,6 +1311,17 @@ function closeArrivals() {
     state.offlineFallbackTimer = null;
   }
   draw();
+  // Launching straight onto a pinned stop means the nearby list was never
+  // fetched: the settings ping runs refreshCurrent(), which on the arrivals
+  // screen refreshes only the arrivals. Backing out then landed on an empty
+  // list still showing its boot status ("Connecting…") with nothing on the way
+  // — it looked hung, and only a manual pull-to-refresh ever filled it.
+  //
+  // Fetch it here, lazily, rather than warming it at boot: this is the moment
+  // the list is first wanted, and a stop pinned for the commute is often the
+  // only screen looked at, so a boot-time fetch would spend a request on a
+  // list that is never opened.
+  if (!state.rows.length && !state.nearbyPending) fetchNearby(false);
 }
 
 /* --------------------------------------------------------------- buttons */
@@ -1057,14 +1333,46 @@ new Button({
   types: ["select", "up", "down", "back"],
   onPush(down, type) {
     if (!down) {
-      // Releasing Select before the long-press timer fires cancels the
-      // unfavorite (the unfavorite itself happens mid-hold, in the timer).
-      if (state.selTimer) {
+      if (type === "back") state.backHeld = false;
+      if (type === "up") state.upHeld = false;
+      // Releasing before a long-press timer fires cancels it — Select's and
+      // Down's holds act MID-hold, so the screen changes while the button is
+      // still down and you know it took before you let go.
+      if (type === "select" && state.selTimer) {
         Timer.clear(state.selTimer);
         state.selTimer = null;
       }
+      if (type === "down" && state.downTimer) {
+        Timer.clear(state.downTimer);
+        state.downTimer = null;
+      }
+      // Swallow the releases belonging to an exit chord, so letting go of Back
+      // after Back+Up does not also "go back".
+      if (state.chordFired) {
+        if (!state.backHeld && !state.upHeld) state.chordFired = false;
+        return;
+      }
+      // Back on the ARRIVALS screen resolves on RELEASE, not on press. That
+      // is what leaves room for Up to join it: pressing Back must not close
+      // the screen before we can see whether a chord is forming.
+      if (type === "back" && state.mode === MODE_ARRIVALS) backTap();
       return;
     }
+
+    // ---- the exit chord, checked before anything else --------------------
+    // Back + Up together leaves the app and KEEPS the pin. It exists because
+    // Back alone cannot: a held Back is always taken by the firmware's own
+    // exit before we ever see it, so "leave but remember this" needed a
+    // gesture that is not a hold at all.
+    if (type === "back") state.backHeld = true;
+    if (type === "up") state.upHeld = true;
+    if (state.backHeld && state.upHeld) {
+      state.chordFired = true;
+      watch.exit();
+      return;
+    }
+    // Any press dismisses the pin confirmation.
+    if (state.pinMsg) state.pinMsg = "";
     if (state.mode === MODE_LIST) {
       if (type === "up") {
         if (state.sel > 0) { state.sel--; clampScroll(); draw(); }
@@ -1085,10 +1393,16 @@ new Button({
       } else if (type === "select" && state.rows.length) {
         openArrivals(state.rows[state.sel]);
       } else if (type === "back") {
-        watch.exit();
+        // Back leaves, and leaving from the root means done — the launcher
+        // line goes with it (exitApp). To leave and KEEP it, use the chord.
+        exitApp();
       }
     } else {
-      if (type === "select" && state.stop && !state.favPending) {
+      if (type === "select" && state.selLine) {
+        // Cursor showing: Select PINS that route. Favoriting keeps Select only
+        // when there is no cursor, so the two never compete for one press.
+        pinRoute();
+      } else if (type === "select" && state.stop && !state.favPending) {
         // Tap favorites; unfavoriting needs a ≥LONGPRESS_MS hold so a stray
         // tap can't silently unstar a stop. The timer fires mid-hold; the
         // mode/fav re-checks make it a no-op if the screen or state changed
@@ -1104,23 +1418,50 @@ new Button({
           toggleFav();
         }
       } else if (type === "back") {
-        closeArrivals();
+        // Nothing on press — Back resolves on RELEASE (see the top of
+        // this handler), which is what leaves room for Up to join it and
+        // form the exit chord.
       } else if (type === "up") {
-        // Scroll up; at the very top, manual refresh — rate-limited like the
-        // list's pull-to-refresh (the phone's 45 s arrivals cache answers
-        // near-instantly, so the guard alone doesn't stop refresh-mashing).
-        if (state.arrTop > 0) { state.arrTop--; draw(); }
-        else if (Date.now() >= state.refrOkAt) {
+        // With a cursor: move it, scrolling only when it would leave the
+        // window. Without one: scroll, and at the very top manual-refresh —
+        // rate-limited like the list's pull-to-refresh (the phone's 45 s
+        // arrivals cache answers near-instantly, so the guard alone doesn't
+        // stop refresh-mashing).
+        if (state.arrSel >= 0 && !state.selLocked) {
+          // Cursor still being chosen: move it to the previous ROUTE. At the
+          // first one nothing happens — a refresh there would fight the cursor
+          // rather than serve it.
+          moveArrSel(-1);
+        } else if (state.arrTop > 0) {
+          state.arrTop--; draw();
+        } else if (Date.now() >= state.refrOkAt) {
           state.refrOkAt = Date.now() + REFRESH_COOLDOWN_MS;
           fetchArrivals();
         }
       } else if (type === "down") {
-        // Scroll down; at the bottom, load more arrival times (no refresh).
-        if (state.arrTop + VISIBLE_ARRIVALS < state.arrivals.length) {
+        if (state.arrSel >= 0 && !state.selLocked) {
+          moveArrSel(1); // next ROUTE, skipping this route's other departures
+        } else if (state.arrTop + VISIBLE_ARRIVALS < state.arrivals.length) {
+          // Scroll down; at the bottom, load more arrival times (no refresh).
           state.arrTop++; draw();
         } else if (state.arrivals.length >= state.arrLimit && state.arrLimit < ARR_MAX) {
           state.arrLimit = Math.min(ARR_MAX, state.arrLimit + ARR_STEP);
           fetchArrivals();
+        }
+        // HOLDING Down reveals the route cursor. Armed after the tap action
+        // above rather than instead of it, the same way Select's unfavorite
+        // is: a hold therefore scrolls a row and then reveals the cursor,
+        // which lands it on a row you have just looked at. The screen is a
+        // readout by default — a cursor nobody asked for implies a choice
+        // that isn't there.
+        if (state.arrSel < 0 && state.arrivals.length) {
+          state.downTimer = Timer.set(() => {
+            state.downTimer = null;
+            if (state.mode === MODE_ARRIVALS && state.arrSel < 0 && state.arrivals.length) {
+              setArrSel(state.arrTop); // clears selLocked: a fresh cursor is
+              draw();                  // being chosen, not yet committed
+            }
+          }, LONGPRESS_MS);
         }
       }
     }
@@ -1166,6 +1507,45 @@ watch.addEventListener("connected", () => {
 });
 
 state.status = watch.connected.app ? "Connecting…" : "Waiting for phone…";
+
+// Open on the stop you pinned, if there is one. This is the whole point of
+// keeping a copy here: the record is read before anything has been asked of
+// the phone, so the first frame shows real minutes even with the phone dead,
+// Bluetooth off, or pkjs still starting. The times are absolute, so they are
+// as correct now as they were when they were written — tickArrivals derives
+// the display from (whenMs - now) and drops the ones that have gone.
+//
+// Read exactly here, once, while the arena is emptiest and a JSON.parse is at
+// its cheapest (playbook §B). The blob is a few hundred bytes against the
+// 1.2–1.6 KB of free chunk a rows response needs.
+const pin = loadPin();
+if (pin && pin.arrivals.length) {
+  state.pinned = true;
+  state.mode = MODE_ARRIVALS;
+  state.stop = pin.stop;
+  state.stopIsFav = pin.stop.fav;
+  state.lastStop = pin.stop;
+  state.lastLine = pin.line;
+  state.arrivalsAt = pin.arrivalsAt;
+  state.arrivals = prepareArrivals(pin.arrivals);
+  // Restore the route cursor onto the line you pinned, so the screen comes
+  // back in the state you left it rather than silently widening to the whole
+  // stop while the launcher still shows one route.
+  if (pin.line) {
+    for (let i = 0; i < state.arrivals.length; i++) {
+      if (state.arrivals[i].line === pin.line) { setArrSel(i); break; }
+    }
+  }
+  // Age the stored minutes to now BEFORE the first frame — prepareArrivals
+  // computed each `min` from a stamp that may be hours old.
+  state.offline = true;
+  tickArrivals();
+  state.arrivalsStatus = state.arrivals.length ? "" : "No live data";
+  // The pinned copy is a starting point, not the answer: openArrivals'
+  // machinery (fetch + the 60 s refresh timer) still has to run, and it does
+  // when the phone announces itself (protocol.onSettingsChanged below).
+  state.refreshTimer = Timer.repeat(fetchArrivals, 60000);
+}
 draw();
 
 // Clock: tick the bottom-right time once a MINUTE via a Timer, aligned to the
