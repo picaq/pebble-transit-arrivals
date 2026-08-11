@@ -41,6 +41,7 @@ Pebble’s modern **Alloy** framework (no C required).
     ├── embeddedjs/           ← runs ON THE WATCH (UI and buttons only)
     │   ├── manifest.json     ← every watch module must be listed here
     │   ├── main.js           ← screens, rendering, button handling
+    │   ├── pinned.js         ← the pinned stop (the ONLY watch storage)
     │   └── protocol.js       ← watch side of the watch↔phone protocol
     └── pkjs/                 ← runs ON YOUR PHONE (everything else)
         ├── index.js          ← settings + favorites + geolocation + router
@@ -209,10 +210,43 @@ foreground on the phone, or `pebble install` fails with
 
 | Button | Stop list screen | Arrivals screen |
 |---|---|---|
-| Up | Move selection (refresh nearby stops if already at top) | Manual refresh |
-| Down | Move selection (load more stops if already at the bottom) | Manual refresh |
-| Select | Open stop’s arrivals | ★ favorite / unfavorite the stop |
-| Back | Exit app | Return to stop list |
+| Up | Move selection (refresh nearby stops if already at top) | Scroll up (refresh if already at top); with a route cursor showing, move it to the previous route |
+| Down | Move selection (load more stops if already at the bottom) | Scroll down (load more arrivals at the bottom); with a cursor showing, move it to the next route. **Hold to show the cursor** |
+| Select | Open stop’s arrivals | ★ favorite the stop (hold to unfavorite). **With a cursor showing: pin that route** |
+| Back | Exit the app, clearing the pinned stop | Put the cursor away, or return to the stop list |
+| **Back + Up together** | Exit the app, **keeping** the pinned stop | Exit the app, **keeping** the pinned stop |
+
+Two things are worth calling out because they are not guessable:
+
+- **Down is held to reveal the route cursor.** The arrivals screen has no
+  cursor until you ask for it — it is a readout, not a menu.
+- **Leaving is two different gestures on purpose.** A plain Back means “done”:
+  it quits and takes the launcher line with it. Back and Up together means
+  “keep this for later”: it quits and leaves the stop counting down on the
+  launcher.
+
+Pinning does not leave the app, and leaving does not pin. They were one
+gesture at first — hold Back — and it could never be made to work: the
+firmware claims a held Back for its own exit before the app is allowed to see
+it, so the pin never ran.
+
+### Pinning a stop
+
+On an arrivals screen, **hold Down** to bring up the route cursor: one route
+stays in full color and the rest fade back. Up and Down move between routes.
+Then **press Select** to pin the one you want.
+
+Pinning remembers the stop on the watch itself, so opening the app takes you
+straight back to it, counting down. That works with the phone off, out of
+range, or out of battery, because the times are stored as real clock times
+rather than “4 minutes” — they stay right however long the watch sits, and
+stale ones simply drop off.
+
+**Back and Up together** leaves the app and keeps all of that. **A plain Back
+off the stop list** leaves and forgets it: that is how you say you are done.
+
+> Showing those times under the app name in the launcher, the way some
+> watchapps do, is **not** part of this yet. It is being worked on separately.
 
 Favorites appear at the top of the list with a ★, sorted nearest-first.
 They are stored on the phone. Starring/unstarring on the watch and the
@@ -226,6 +260,14 @@ farther away than the “Hide favorites beyond” setting (default 19 km /
 A nearby favorite with nothing currently arriving draws dimmed (gray,
 subtitle “no arrivals”); service info comes from one cached agency-wide
 request, so a stop that just went quiet can stay undimmed briefly.
+
+**When things are offline.** The app degrades in three steps rather than
+failing. Without a GPS fix it falls back to a coarse wifi position and then to
+wherever it last saw you, and says so: the header reads “Location 40m old”
+instead of the app name, so the distances are never passed off as current.
+Without a network the phone answers with the last predictions it fetched, and
+the footer says how old they are. With no phone at all, a pinned stop still
+counts down from the watch’s own copy.
 
 The stop-count setting is a **starting default, not a limit**: press Down at
 the bottom of the list to load more, farther stops, as many times as you like.
