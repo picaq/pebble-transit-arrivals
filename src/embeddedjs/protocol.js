@@ -29,15 +29,13 @@
  *                          // idempotently so a stale `f` flag on the watch
  *                          // cannot silently unstar a stop.
  *   { id, cmd: "pin",      a, c, n, l? }  or  { id, cmd: "pin", clear: 1 }
- *                          // Keep this stop on the LAUNCHER, under the app
- *                          // name, as a live countdown the firmware draws
- *                          // (Pebble.appGlanceReload on the phone). l = a
- *                          // single route name when one was highlighted,
- *                          // absent for every route at the stop. clear:1
- *                          // takes the app's launcher line away again.
- *                          // The watch WAITS for the reply before exiting:
- *                          // pkjs dies with the app, so an unanswered
- *                          // request never reaches the firmware.
+ *                          // Tell the phone which stop the watch has pinned,
+ *                          // so it keeps that stop's arrivals cached in
+ *                          // preference to others. l = a single route name
+ *                          // when one was highlighted, absent for every route
+ *                          // at the stop; clear:1 forgets it. Fire and forget
+ *                          // — the watch keeps its own record and does not
+ *                          // depend on the answer.
  * Response JSON:
  *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }], stale?, fix? }
  *                           // One pre-merged, pre-sorted, display-ready list:
@@ -266,14 +264,11 @@ export const protocol = {
   },
 
   /**
-   * Put this stop on the launcher, under the app name, as a countdown the
-   * firmware keeps drawing after we are gone (the phone calls
-   * Pebble.appGlanceReload). `line` narrows it to one route; falsy means
-   * every route at the stop. Resolves to { pinned: 1|0 }.
+   * Tell the phone which stop is pinned. `line` narrows it to one route;
+   * falsy means every route at the stop. Resolves to { pinned: 1|0 }.
    *
-   * The caller must AWAIT this before exiting. pkjs is torn down with the
-   * watchapp, so a request still in flight at watch.exit() is a request the
-   * phone never finishes answering — and the launcher keeps whatever it had.
+   * Fire and forget: the watch keeps its own record (pinned.js), which is the
+   * copy that survives the phone being unreachable, so nothing waits on this.
    */
   setPin(agency, code, name, line) {
     const body = { cmd: "pin", a: agency, c: code, n: name };
@@ -281,7 +276,7 @@ export const protocol = {
     return request(body);
   },
 
-  /** Take the app's launcher line away. Resolves to { pinned: 0 }. */
+  /** Tell the phone to forget the pinned stop. Resolves to { pinned: 0 }. */
   clearPin() {
     return request({ cmd: "pin", clear: 1 });
   }

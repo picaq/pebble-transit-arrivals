@@ -1034,10 +1034,9 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
 }
 
 // The persisted arrivals for one stop, absolute times intact: [{line, dest,
-// when, k?}] newest-known, or null. The launcher subtitle needs the raw
-// timestamps rather than serveArrivals' minutes, because the AppGlance
-// template counts down from an epoch second in firmware (index.js buildGlance).
-// Reads only what is already stored — never a network call.
+// when, k?}] newest-known, or null. For a caller that needs the raw timestamps
+// rather than serveArrivals' minutes. Reads only what is already stored —
+// never a network call.
 function cachedArrivals(agency, stopCode) {
   var e = anyArrivalsCache(agency + ":" + stopCode);
   return e ? { ts: e.ts, list: e.list } : null;
