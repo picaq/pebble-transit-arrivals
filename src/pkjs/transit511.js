@@ -814,7 +814,69 @@ function getFavoriteStatus(favs, lat, lon, settings, maxCheckM, cb) {
  * serve time, so a cached answer still ticks down correctly.
  */
 var ARRIVALS_TTL_MS = 45 * 1000;
-var fullArrivalsCache = {}; // "AGENCY:code" -> { ts, list: [{line, dest, when}] }
+var fullArrivalsCache = {}; // "AGENCY:code" -> { ts, lim, list: [{line, dest, when}] }
+
+// …and persisted, because pkjs is torn down when the watchapp closes, so the
+// in-memory copy above is empty on every launch. That made an offline launch
+// worthless: no network meant an error row, even though the stored times are
+// absolute and stay perfectly computable forever (serveArrivals recomputes
+// the minutes from `when` at serve time, at any age).
+//
+// TTL policy is unchanged — ARRIVALS_TTL_MS still decides whether a cached
+// answer is FRESH enough to serve instead of asking 511. Disk only widens
+// what happens when asking fails: rather than erroring, serve what we have
+// and let the response say how old it is. A rider reading four-minute-old
+// predictions is far better served than one reading "Network error".
+//
+// Bounded to ARRIVALS_KEEP stops, newest first, because these are the only
+// caches with no natural ceiling (a stop list is per agency; this is per
+// stop). The index key holds the order so eviction needs no key enumeration.
+var ARRIVALS_PREFIX = "arrivals.v1.";
+var ARRIVALS_INDEX_KEY = "arrivals.idx.v1";
+var ARRIVALS_KEEP = 4; // the pinned stop plus the last three looked at
+
+function loadArrivalsDisk(cacheKey) {
+  try {
+    var raw = localStorage.getItem(ARRIVALS_PREFIX + cacheKey);
+    var e = raw ? JSON.parse(raw) : null;
+    return e && e.list && e.list.length ? e : null; // { ts, lim, list }
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveArrivalsDisk(cacheKey, entry) {
+  try {
+    localStorage.setItem(ARRIVALS_PREFIX + cacheKey, JSON.stringify(entry));
+    var idx;
+    try {
+      idx = JSON.parse(localStorage.getItem(ARRIVALS_INDEX_KEY) || "[]");
+    } catch (e) {
+      idx = [];
+    }
+    if (!Array.isArray(idx)) idx = [];
+    idx = idx.filter(function (k) { return k !== cacheKey; });
+    idx.unshift(cacheKey);
+    while (idx.length > ARRIVALS_KEEP) {
+      localStorage.removeItem(ARRIVALS_PREFIX + idx.pop());
+    }
+    localStorage.setItem(ARRIVALS_INDEX_KEY, JSON.stringify(idx));
+  } catch (e) {
+    // Quota — the next fetch just goes to the network, which is the old
+    // behavior. Never worth failing a request over.
+    console.log("511: arrivals save failed for " + cacheKey + ": " + e.message);
+  }
+}
+
+// The freshest copy we hold, memory or disk, or null. Memory wins: within one
+// app session it is the same data without a parse.
+function anyArrivalsCache(cacheKey) {
+  var mem = fullArrivalsCache[cacheKey];
+  if (mem) return mem;
+  var disk = loadArrivalsDisk(cacheKey);
+  if (disk) fullArrivalsCache[cacheKey] = disk; // promote, so a second ask is free
+  return disk;
+}
 
 function serveArrivals(list) {
   var now = Date.now();
@@ -866,15 +928,32 @@ function cleanDest(agency, raw) {
 
 // limit: how many arrivals to return (watch "load more" raises it). Bounded
 // to keep the AppMessage payload under the watch's ~1 KB parse budget.
+//
+// cb(err, arrivals, asof) — asof is the epoch ms these predictions were
+// fetched, which the watch needs to age them itself. It is NOT always "now":
+// a cache hit and an offline fallback both hand back an older stamp, and the
+// watch's whenMs arithmetic is only correct if it uses this rather than its
+// own clock at receipt.
 var MAX_ARRIVALS = 10;
 function getArrivals(agency, stopCode, apiKey, limit, cb) {
   limit = Math.max(1, Math.min(MAX_ARRIVALS, limit || 6));
   var cacheKey = agency + ":" + stopCode;
-  var cached = fullArrivalsCache[cacheKey];
+  var cached = anyArrivalsCache(cacheKey);
   // Reuse the cache only if it holds at least as many as now requested (a
   // "load more" asks for more than the last fetch stored).
   if (cached && Date.now() - cached.ts < ARRIVALS_TTL_MS && cached.lim >= limit) {
-    return cb(null, serveArrivals(cached.list));
+    return cb(null, serveArrivals(cached.list), cached.ts);
+  }
+
+  // Whatever we end up with, `cached` is the floor: if the network is gone
+  // or 511 is unhappy, stale predictions beat no predictions.
+  function fallback(err) {
+    if (!cached) return cb(err);
+    var served = serveArrivals(cached.list);
+    if (!served.length) return cb(err); // everything in it has already left
+    console.log("511: " + err.message + " — serving arrivals from " +
+      Math.round((Date.now() - cached.ts) / 1000) + "s ago");
+    cb(null, served, cached.ts);
   }
 
   // A split agency's stop code is (station, direction) — "901809-N". Ask 511
@@ -889,7 +968,7 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
     "&agency=" + encodeURIComponent(agency) +
     "&stopcode=" + encodeURIComponent(apiStop) + "&format=json";
   getJSON(url, function (err, data) {
-    if (err) return cb(err);
+    if (err) return fallback(err);
     var visits;
     try {
       var delivery = data.ServiceDelivery.StopMonitoringDelivery;
@@ -897,7 +976,7 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
       if (Array.isArray(delivery)) delivery = delivery[0];
       visits = delivery.MonitoredStopVisit || [];
     } catch (e) {
-      return cb(new Error("Unexpected 511 response"));
+      return fallback(new Error("Unexpected 511 response"));
     }
     if (!Array.isArray(visits)) visits = [visits];
 
@@ -944,14 +1023,30 @@ function getArrivals(agency, stopCode, apiKey, limit, cb) {
       }
       list.push(entry);
     }
-    fullArrivalsCache[cacheKey] = { ts: now, lim: limit, list: list };
-    cb(null, serveArrivals(list));
+    // An empty result is not worth persisting over a list that still has
+    // trains in it — 511 returns nothing at all during a service outage, and
+    // overwriting would throw away the last thing we knew.
+    var entry = { ts: now, lim: limit, list: list };
+    fullArrivalsCache[cacheKey] = entry;
+    if (list.length || !cached) saveArrivalsDisk(cacheKey, entry);
+    cb(null, serveArrivals(list), now);
   });
+}
+
+// The persisted arrivals for one stop, absolute times intact: [{line, dest,
+// when, k?}] newest-known, or null. The launcher subtitle needs the raw
+// timestamps rather than serveArrivals' minutes, because the AppGlance
+// template counts down from an epoch second in firmware (index.js buildGlance).
+// Reads only what is already stored — never a network call.
+function cachedArrivals(agency, stopCode) {
+  var e = anyArrivalsCache(agency + ":" + stopCode);
+  return e ? { ts: e.ts, list: e.list } : null;
 }
 
 module.exports = {
   findNearbyStops: findNearbyStops,
   getArrivals: getArrivals,
+  cachedArrivals: cachedArrivals,
   getFavoriteStatus: getFavoriteStatus,
   getStopInfo: getStopInfo
 };
