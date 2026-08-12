@@ -1264,8 +1264,24 @@ function setArrSel(i) {
 // one is showing (the change you most recently made, and undoing it should not
 // also cost you the screen), otherwise return to the list.
 function backTap() {
-  if (state.selLine) { setArrSel(-1); draw(); }
-  else closeArrivals();
+  if (state.selLocked) {
+    // A committed route stays pinned until Back says otherwise — including
+    // across leaving and reopening the app. This press UNPINS it and nothing
+    // else: the screen stays, so undoing a pin never also costs you the stop
+    // you are reading. A second Back then returns to the list as usual.
+    clearPin();
+    state.pinned = false;
+    state.lastStop = null;
+    protocol.clearPin();   // fire and forget; the watch's record is the real one
+    setArrSel(-1);
+    state.pinMsg = "Unpinned";
+    draw();
+  } else if (state.selLine) {
+    setArrSel(-1);
+    draw();
+  } else {
+    closeArrivals();
+  }
 }
 
 function moveArrSel(dir) {
@@ -1533,7 +1549,15 @@ if (pin && pin.arrivals.length) {
   // stop while the launcher still shows one route.
   if (pin.line) {
     for (let i = 0; i < state.arrivals.length; i++) {
-      if (state.arrivals[i].line === pin.line) { setArrSel(i); break; }
+      if (state.arrivals[i].line === pin.line) {
+        setArrSel(i);
+        // COMMITTED, not mid-choice. Without this the route came back looking
+        // unpinned on every launch: the cursor showed but Up/Down moved it and
+        // the footer offered to pin something that already was pinned. A pin
+        // is meant to survive leaving — that is the whole point of it.
+        state.selLocked = true;
+        break;
+      }
     }
   }
   // Age the stored minutes to now BEFORE the first frame — prepareArrivals
