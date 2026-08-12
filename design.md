@@ -25,7 +25,11 @@ CLAUDE.md §11–12 and `docs/WATCH-DEBUGGING-PLAYBOOK.md`):
 | Screen | What it shows | Entry / exit |
 |---|---|---|
 | LIST (`MODE_LIST`) | Header “Transit Minute”, then favorites (★, nearest first, hidden entirely beyond the hide-distance setting) followed by nearby stops; any row — favorite or not — is dimmed when nothing is arriving | App start; Back from ARRIVALS |
-| ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, scrollable arrival rows (~4 visible, `VISIBLE_ARRIVALS`), footer favorite hint | Select on a list row; Back returns |
+| ARRIVALS (`MODE_ARRIVALS`) | Header = truncated stop name, scrollable arrival rows (~4 visible, `VISIBLE_ARRIVALS`), footer favorite hint. Holding Down reveals a **route cursor**: the row under it draws normally and every other row dims (`DIM`) | Select on a list row; Back returns; **also the boot screen when a stop is pinned** (§13) |
+
+The app does **not** always start on the LIST. When `pinned.js` holds a
+record, boot opens ARRIVALS on that stop from watch storage, before anything
+has been asked of the phone — see §13.
 
 All rendering is Poco (immediate mode, full redraw) in
 `src/embeddedjs/main.js`. Switching to Piu is possible but is an
@@ -64,6 +68,7 @@ hardcoded text y-offsets in `draw()` (`y + 2`, `y + 22`, `y + 26`).
 | `LINE_COLOR_CODES` | g 0,140,60 · y 215,170,0 · r 200,30,30 · o 210,110,0 · b 0,90,200 | Route names whose arrival carries a color code `k` from the phone — today that’s BART’s color-named lines, drawn in their line color (full name on the arrivals screen). Yellow is darkened for readability on white |
 | `AGENCY_COLORS` | SF 198,12,48 (Muni red) · BA 0,100,164 (BART blue) · CT 227,24,55 (Caltrain red) · AC 0,131,62 (AC Transit green) · GG 200,70,30 (Golden Gate orange) · SM 0,87,158 (SamTrans blue) · SB 0,150,160 (SF Bay Ferry teal — its livery is a blue, but BART/SamTrans already read as blue and AC as green, so a teal keeps the code distinct and evokes water) · CC 122,20,46 (County Connection burgundy — its livery is burgundy and gold, but gold can’t hold up as 14px text on white, so burgundy alone carries the brand) | The **agency code leading each list subtitle**, drawn in that operator’s brand color so “which system is this” reads before the text does. Approximations of each livery/wordmark, darkened where needed to stay legible as 14px text on white. Muni and Caltrain are both genuinely red, BART and SamTrans both genuinely blue — the two-letter **code** identifies the agency and the color only reinforces it. Applied **only on an ordinary row**: a selected row is white-on-accent (a dark brand blue on the blue bar would be unreadable) and a dimmed row stays uniformly gray, which is the entire signal that nothing is arriving. Unlisted agencies (any `ExtraAgencies` code) fall back to `SUB_GRAY`. Costs one precomputed row field (`row.agencyW`) so `draw()` still allocates nothing |
 | `STAR_COLOR` | 240,165,15 (amber) | The favorite ★ on a list row, drawn as its own piece of the title so it can carry its own color — midway between yellow and orange, dark enough to hold up as a glyph on white. White when the row is selected (readable on the accent bar). It does **NOT** gray out on a dimmed row: being a favorite has nothing to do with whether a bus is coming, and the star is what you scan the list for |
+| `DIM` | 175,175,175 | The arrival rows **not** under the route cursor, once holding Down has revealed one (§6). Dimming the rest rather than highlighting one keeps the row you care about rendered exactly as you were already reading it — a selection bar would recolor the very thing you picked. Light enough to read as backgrounded at a glance, dark enough that the other times are still legible: you are picking one route, not hiding the others, and those times are still why you opened the screen |
 | `TOKEN_GRAY` | = `GRAY` (120,120,120) | The trailing direction token and its middot (“ · N”, “ · I”), drawn as its own piece of the title. It identifies the stop but is not part of what the stop is *called*, and at full black it competed with the name. White when selected |
 
 Change the palette freely — colors are `render.makeColor(r,g,b)` calls,
@@ -122,6 +127,8 @@ from ~124 B to ~1.9 KB after the switch). `timeX` is remeasured in-frame
 | Header title “Transit Minute” (+ “…” appended after the title while a refresh is in flight — both screens, the arrivals header gets it too; “…” because its glyph is proven in Gothic-Bold 18; arrow glyphs like ↻ are not in the font and render blank) | `drawHeader()` / `drawHeaderBusy()`, `main.js` |
 | “★ hold Select to unfavorite” / “Select to ★ favorite” | `HINT_IS_FAV` / `HINT_NOT_FAV`, `main.js` |
 | “Offline · updated Nm ago” (arrivals footer, replaces the favorite hint while showing last-known arrivals with no network; N = whole minutes since fetch) | `OFFLINE_PREFIX` + age, built in `buildOfflineText()` / `tickArrivals()`, `main.js` (precomputed into `state.offlineText`, off the draw path) |
+| “Hold Back to pin this route” (arrivals footer, while a route cursor is showing — outranks both the offline age and the favorite hint, since the cursor is the choice you most recently made) | `HINT_SELECTED`, `main.js` |
+| “Location Nm old” (LIST **header**, replacing “Transit Minute” whenever the rows response carried `fix` — the phone could not get a live position and ranked the stops from a remembered one, N minutes ago). It takes the header rather than a footer because the list has no spare band: five 40 px rows fill the screen under the header, so anything drawn at the bottom lands on the last row’s subtitle | `FIX_PREFIX` + age + `FIX_SUFFIX`, built once per response in `fetchNearby()`, `main.js` (precomputed into `state.fixText`, off the draw path) |
 | “No live data” (arrivals body, when the last-known arrivals all age out while offline) | `tickArrivals()`, `main.js` |
 | “No phone connection” (arrivals body, when a stop is opened while the phone link is down and there is no prior data to count down) | offline fallback timer in `fetchArrivals()`, `main.js` |
 | “Loading…”, “Finding stops…”, “No stops nearby”, “No arrivals”, “Connecting…”, “Waiting for phone…”, “Error: …” | `state.status` / `state.arrivalsStatus` setters throughout `main.js` |
@@ -142,10 +149,11 @@ changes belong on the phone, not the watch (thin-client rule).
 
 | Button | LIST screen | ARRIVALS screen |
 |---|---|---|
-| Up | Move selection up; **at top: pull-to-refresh** — the list **stays on screen AND stays interactive** (scroll/select keep working; blocking input for the round trip was rejected as bad UX) with a “…” indicator after the header title while a `fresh:1` rebuild runs. The rows stay live until the response **arrives**, then are released in `protocol.onBeforeParse` — synchronously before the parse — so the parse still lands beside freed heap (a rows parse needs >1.6 KB of chunk — playbook §B ninth recurrence); the framebuffer shows the old rows for the few ms until the rebuild repaints. Refresh resets scroll to the top | Scroll up; **at top: manual refresh** — the arrivals **stay on screen, interactive, and ticking** (no freeze) with a “…” header while the request is out, exactly like the list; they are released in `protocol.onBeforeParse` only for a real data response, so a failed (offline) refresh keeps them and counts them down instead of erroring (see §7) |
-| Down | Move selection down; **at bottom: load more stops** — append the next page of farther stops (`fetchMore()` → phone `buildMoreRows`), up to `MAX_LIST_ROWS`=14 total, no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh |
+| Up | Move selection up; **at top: pull-to-refresh** — the list **stays on screen AND stays interactive** (scroll/select keep working; blocking input for the round trip was rejected as bad UX) with a “…” indicator after the header title while a `fresh:1` rebuild runs. The rows stay live until the response **arrives**, then are released in `protocol.onBeforeParse` — synchronously before the parse — so the parse still lands beside freed heap (a rows parse needs >1.6 KB of chunk — playbook §B ninth recurrence); the framebuffer shows the old rows for the few ms until the rebuild repaints. Refresh resets scroll to the top | Scroll up; **at top: manual refresh** — the arrivals **stay on screen, interactive, and ticking** (no freeze) with a “…” header while the request is out, exactly like the list; they are released in `protocol.onBeforeParse` only for a real data response, so a failed (offline) refresh keeps them and counts them down instead of erroring (see §7). With the route cursor showing, Up moves it instead, and at the **first** route it does nothing — a refresh there would fight the cursor rather than serve it |
+| Down | Move selection down; **at bottom: load more stops** — append the next page of farther stops (`fetchMore()` → phone `buildMoreRows`), up to `MAX_LIST_ROWS`=14 total, no refresh | Scroll down; **at bottom: load more arrival times** — raise the requested count (`state.arrLimit`, +`ARR_STEP` up to `ARR_MAX`=10), no refresh. **HOLD 0.5 s (`LONGPRESS_MS`): reveal the route cursor** — armed alongside the tap action rather than instead of it (the same shape as Select’s unfavorite), so a hold scrolls a row and then puts the cursor on it. With the cursor showing, Down moves it and scrolls only when it would leave the window. The screen is a readout by default: a cursor nobody asked for implies a choice that is not there |
 | Select | Open arrivals for highlighted stop | **Tap to ★ favorite; HOLD 0.5 s (`LONGPRESS_MS`) to unfavorite** — a stray tap on a starred stop does nothing (accidental unfavorites during fast use prompted this). The unfavorite fires **mid-hold at the threshold** (a `Timer` armed on press, cancelled by early release), so the footer hint flips while the button is still down; releasing early cancels. Toggles **visibility** only (never deletes) via a `fav` request to the **phone** (which owns the list). The request carries the state it wants (`w:1`/`w:0`, `protocol.setFav`), **not a flip** — it used to be a blind toggle of whatever the phone had stored, so a watch showing a stale ★ flag would *unstar* the stop the user was trying to star (see §8) |
-| Back | Exit app (`watch.exit()`) | Return to list |
+| Back | **Tap: exit app** (`exitApp()`) — and, since leaving from the root means done, it forgets the pinned stop too (`clearPin()`). To leave and KEEP it, use the chord | **Tap: put the route cursor away, or return to the list** if there is no cursor. Resolves on RELEASE, not on press — that is what leaves room for Up to join it and form the chord |
+| **Back + Up together** | **Exit, KEEPING the pin** (`state.backHeld` + `state.upHeld`, checked before any per-screen handling; the releases that follow are swallowed via `state.chordFired`) | Same |
 
 Neither screen refreshes on **Down** anymore (it was a wasted API call): Down
 always means “show me more” — more stops (wider radius) on the list, more
@@ -238,6 +246,8 @@ toggles, confirmed by a dialog at save time (`clayCustomFn`).
 | Nearby stop count | `maxStops` setting (default 8) is a **starting default, not a ceiling**: it shapes the opening screen (extended through dense clusters, `WATCH_LIST_CAP`=14 rows on page 0). **Down at the bottom appends farther stops without limit** (retention is capped and slides — see the retention row below). The phone paginates via `buildMoreRows` (`off` = non-favorites already shown; `hardCeiling` override on `selectNearbyStops` reaches past the default 14 candidates). Loading only stops when the phone returns an empty page, i.e. nothing left within `MORE_RADIUS_MAX_M` | `selectNearbyStops()` + `HARD_STOP_CEILING`, `transit511.js`; `fetchMore()`, `main.js` |
 | Search radius | `radiusM` setting, default 500 m for the page-0 list; “load more” paginates from a **growing** radius: `MORE_RADIUS_M`=5000 m for the first page, **doubling per page** (5 km, 10, 20, …) up to `MORE_RADIUS_MAX_M`=200 km, so Down never hits a distance wall. It was a flat 5 km until 2026-07-13  — once you’d seen every stop inside it, every further Down returned an empty page and the watch latched “no more stops” for good. Widening costs no 511 calls (agency stop lists are already cached; radius is just a filter). **Rail stops search out to `radiusM` × `railRadiusX`** (`stopScale()`), so a far station is in the candidate set at all; the same scaling ranks it (row above). Because a Muni stop’s scale depends on *where* it is, the loop gates twice: everything inside `radiusM` × `railRadiusX` is measured, then re-tested against its own `radiusM` × `mult` (so the hub lookup only runs on what survives the wide scan). The rail filter `dist ≤ radiusM × mult` is exactly `eff ≤ radiusM`, so the candidate set is “everything with effective distance ≤ radius, ordered by effective distance”  — widening the radius only **appends** stops that rank after those already shown, which is what keeps index-based `off` pagination duplicate-free even at 30×. Scoped to favorites only until 2026-07-13, when the multiplier was deliberately extended to unstarred stops as well | settings, `index.js`; `buildMoreRows`, `index.js` |
 | Rows payload budget | **1600 B for page-0 lists** (`ROWS_BUDGET` — fits all 14 rows at ~100 B each); **1000 B for “load more” pages** (`MORE_BUDGET` — fits a full 8-stop `MORE_PAGE`; still tighter than page 0 because a load-more response parses beside the retained full list). **Relaxed 2026-07-12 from 880 B / 400 B** — 32 KB-arena trades (playbook §B seventh/thirteenth/fifteenth recurrences; the 400 was sized to a measured ~750 B worst-case free chunk) lifted by the 72 KB heap on firmware ≥ v4.21.0. Revert both (and `FAV_ROWS_MAX` to 6) for any 32 KB-firmware device. Enforced on the **final serialized payload** in `respond()` (`id`/`stale:1` overhead included; budgeting before they were appended once put 884 B on the wire and crashed the watch mid-parse). The budget is **absolute**: farthest non-favorite stops shed first, then favorites farthest-first as last resort (shed floor is 1 row — “favorites never shed” let 13 favorites ship a 1143 B payload that crashed the watch parse, playbook §B fifteenth recurrence) | `ROWS_BUDGET`/`MORE_BUDGET` + `respond()`, `index.js` |
+| Pinned record (watch) | **6 arrivals**, one stop, `pin.v1` in watch `localStorage` (`MAX_ARRIVALS`, `pinned.js`). Roughly 300 B, read exactly once at boot when the arena is emptiest and written exactly once per Back off an arrivals screen. Sized against the ~1.2 – 1.6 KB of free chunk a rows response needs to parse (playbook §B): raising it trades that headroom for scroll-back you can only see after a relaunch | `MAX_ARRIVALS`, `src/embeddedjs/pinned.js` |
+| Persisted arrivals (phone) | **4 stops**, newest first, `arrivals.v1.<AGENCY>:<code>` (`ARRIVALS_KEEP`). The only cache with no natural ceiling — a stop list is per agency, this is per stop — so an index key (`arrivals.idx.v1`) holds the order and eviction needs no key enumeration | `ARRIVALS_KEEP`, `transit511.js` |
 | Arrivals per stop | default 6; **Down “load more” raises it** to `ARR_MAX`=10 (`req.lim` → `MAX_ARRIVALS` cap on the phone) | parse loop `transit511.js` (`limit`); `state.arrLimit`, `main.js` |
 
 ## 10. Text truncation lengths
@@ -311,10 +321,12 @@ ping and re-runs the nearby search. To add one: `config.js` field →
 
 ## 12. Startup behavior (`main.js:401-407`)
 
-- Before the first response the list is empty with status “Connecting…”
-  (or “Waiting for phone…” if pebblekit isn’t connected) — the watch keeps
-  no persistent data, so there is nothing to render until the phone
-  answers.
+- **If a stop is pinned, boot opens on it instead** (§13): `loadPin()` runs
+  before anything is asked of the phone, so the first frame is real minutes
+  even with the phone dead. The pinned copy is the only thing this app
+  stores on the watch.
+- Otherwise the list is empty until the first response, with status
+  “Connecting…” (or “Waiting for phone…” if pebblekit isn’t connected).
 - If the phone’s rows cache is under 3 min old (`ROWS_FRESH_MS`), the
   first reply is that cached list, served as final — no revalidation
   follows (see §7’s persisted-rows entry; the old 5 s deferred
@@ -324,3 +336,99 @@ ping and re-runs the nearby search. To add one: `config.js` field →
 - The **phone initiates** the first fetch via a `SettingsChanged` ping
   from its `ready` handler — the watch never requests at boot (race, see
   CLAUDE.md §6). Recovery if the ping is lost: Up at the top of the list.
+
+## 13. Working with no phone, no GPS, and no network
+
+Three separate failures, three separate answers. They compose: with all
+three at once the pinned stop still counts down.
+
+### The principle
+
+**Arrival times are absolute.** 511 returns `ExpectedArrivalTime`, the phone
+stores it as `when`, and the watch reconstructs `whenMs` on receipt. A
+displayed minute is always `round((whenMs - now) / 60000)`, so a countdown
+needs no network, no phone, and no refresh — only arithmetic. Everything
+below follows from that one fact, which is why the feature costs so little
+code.
+
+### GPS off or refused: a remembered fix
+
+`locate()` in `index.js` escalates: the normal request, then one retry that
+accepts anything the OS already holds (`maximumAge` an hour, 3 s timeout — 
+this is what answers when GPS is off but the phone has been on wifi all day),
+then `lastfix.v1` from a previous run. Only when all three miss does the
+request return “No phone location”, which is what it did unconditionally
+before.
+
+Nearby search was **already** offline-capable: `findNearbyStops` is pure math
+over the cached agency stop lists, so a lat/lon was the only missing
+ingredient. The remembered fix is never silently passed off as current — the
+rows response carries `fix`, its age in minutes, and the watch replaces the
+header title with “Location Nm old” (§5). The rows cache stores the fix
+*timestamp*, not its age, so a cached serve discloses the same staleness
+rather than under-reporting it by the serve window.
+
+### Network down: the phone serves what it has
+
+`fullArrivalsCache` is now persisted (`arrivals.v1.<AGENCY>:<code>`), because
+pkjs is torn down when the watchapp closes and the in-memory copy was empty
+on every launch. `ARRIVALS_TTL_MS` still decides what counts as **fresh**;
+disk only widens what happens when the fetch **fails** — serve what we have
+and say how old it is, rather than an error row. An empty result never
+overwrites a list that still has trains in it.
+
+Responses carry `asof`, the epoch ms the predictions were **fetched**, which
+is not when they arrive. The watch anchors every `whenMs` to it. Anchoring to
+`Date.now()` instead restarted every countdown from scratch, so a
+four-minute-old “3” showed as “3” and the bus was gone before the number
+moved. Past `OFFLINE_STALE_MS` (90 s, comfortably above the phone’s 45 s
+rate-limit cache) the response is labelled with the usual offline footer.
+
+### Phone dead: the pinned stop
+
+Nothing of ours runs once the app closes — pkjs dies with it and the
+watch VM dies. So the watch keeps its own record, `pin.v1` in
+`localStorage` (`pinned.js`): written on every Back off an arrivals screen
+(it is the most recently looked at stop either way) and cleared by a plain
+Back off the list, so deliberately quitting leaves nothing behind. Boot
+reads it before anything is asked of the phone, which is why the first
+frame is real minutes with no phone at all.
+
+The gestures (§6), after two failed designs. **Hold Down** reveals the
+route cursor; **Select** commits the route under it and pins it, staying in
+the app and handing Up/Down back to scrolling; **Back + Up together** leaves
+while keeping the pin; a plain **Back** off the list leaves and forgets it.
+
+Pinning by holding Back is gone and **cannot be made to work**. It was
+tried at 500 ms and again at 250 ms and neither fired on hardware: the
+firmware claims a held Back for its own exit before the app is allowed to
+see it (user, 2026-08-11: “the back button to clear always overrides the
+press and hold”). The double tap went with it — its first tap had
+already closed the screen, so the second had to be caught on the LIST,
+which was more machinery than the gesture deserved. Pinning moved to
+Select, which competes with nothing, and leaving-while-pinned to a chord,
+which is not a hold and so races nothing.
+
+**Not here yet: the launcher subtitle.** Showing the pinned times under the
+app name is a separate piece of work on its own branch. It is not merely
+unfinished — committing AppGlance slices puts the watch into a reboot
+loop, so nothing in this tree may write one.
+
+### Cost
+
+Watch bytecode loads into the same arena as the heap, and this change adds
+`pinned.js`, a boot-time `JSON.parse`, and the cursor state. Measured on
+hardware from the §F instrumentation line: **25,040 bytes of free chunk at
+idle**, against 32,768 available. The parse runs once at boot when the
+arena is emptiest, and the blob is an order of magnitude smaller than the
+rows payload that `main.js` documents as needing 1.2 – 1.6 KB. Headroom
+has still only been measured at idle, not under a rows or arrivals parse,
+which is where every recorded crash actually happened.
+## Cost
+
+The watch side grew **+4,406 bytes of compiled bytecode** (`mc.xsa` 18,135
+→ 22,541, +24%), and bytecode loads into the same arena as the heap:
+`pinned.js` (1,459 B), the gestures and cursor in `main.js` (12,882 → 15,122,
++2,240 B), and `protocol.js` (2,517 → 2,732, +215 B). On firmware ≥ v4.21.0 that arena is 72 KB (`src/c/mdbl.c`); on
+32 KB firmware this change is **not safe unmeasured**. Confirm headroom from
+the §F instrumentation line on hardware before trusting it (CLAUDE.md §12.13).

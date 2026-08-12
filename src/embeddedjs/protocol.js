@@ -28,8 +28,16 @@
  *                          // FOR, not a flip — the phone applies it
  *                          // idempotently so a stale `f` flag on the watch
  *                          // cannot silently unstar a stop.
+ *   { id, cmd: "pin",      a, c, n, l? }  or  { id, cmd: "pin", clear: 1 }
+ *                          // Tell the phone which stop the watch has pinned,
+ *                          // so it keeps that stop's arrivals cached in
+ *                          // preference to others. l = a single route name
+ *                          // when one was highlighted, absent for every route
+ *                          // at the stop; clear:1 forgets it. Fire and forget
+ *                          // — the watch keeps its own record and does not
+ *                          // depend on the answer.
  * Response JSON:
- *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }], stale? }
+ *   { id, type: "rows",     rows: [{ a, c, n, s, f?, m? }], stale?, fix? }
  *                           // One pre-merged, pre-sorted, display-ready list:
  *                           // favorites (nearest first) then nearby stops.
  *                           // a=agency, c=code, n=name (truncated),
@@ -40,13 +48,24 @@
  *                           // therefore watch heap — playbook §B) small.
  *                           // stale=1 marks the instant cached list — the
  *                           // watch shows it, then sends one fresh:1 request.
- *   { id, type: "arrivals", arrivals: [{ line, dest, min, k? }] }
+ *                           // fix=N means these distances were measured from
+ *                           // a REMEMBERED location fix N minutes old (GPS
+ *                           // was off or refused); absent for a live fix.
+ *   { id, type: "arrivals", arrivals: [{ line, dest, min, k? }], asof }
+ *                           // asof = epoch ms these predictions were FETCHED,
+ *                           // which is not when they arrive: a phone-side
+ *                           // cache hit, or a fallback served after a network
+ *                           // failure, hands back an older stamp. The watch
+ *                           // anchors every whenMs to it (prepareArrivals),
+ *                           // so a stale list keeps counting down toward the
+ *                           // real due time instead of restarting the clock.
  *                           // k = optional display-color code for lines with
  *                           // a canonical color (BART's color-named lines
  *                           // keep their full name and send k="g".."b");
  *                           // the watch maps it to its palette
  *                           // (LINE_COLOR_CODES, main.js)
  *   { id, type: "fav",      fav: 1|0 } // state after the toggle
+ *   { id, type: "pin",      pinned: 1|0 } // 0 = nothing left to count down
  *   { id, type: "error",    message }
  *
  * Keep payloads SMALL (< ~1 KB). The phone side truncates names and caps
@@ -242,6 +261,24 @@ export const protocol = {
    */
   setFav(agency, code, name, want) {
     return request({ cmd: "fav", a: agency, c: code, n: name, w: want });
+  },
+
+  /**
+   * Tell the phone which stop is pinned. `line` narrows it to one route;
+   * falsy means every route at the stop. Resolves to { pinned: 1|0 }.
+   *
+   * Fire and forget: the watch keeps its own record (pinned.js), which is the
+   * copy that survives the phone being unreachable, so nothing waits on this.
+   */
+  setPin(agency, code, name, line) {
+    const body = { cmd: "pin", a: agency, c: code, n: name };
+    if (line) body.l = line;
+    return request(body);
+  },
+
+  /** Tell the phone to forget the pinned stop. Resolves to { pinned: 0 }. */
+  clearPin() {
+    return request({ cmd: "pin", clear: 1 });
   }
 };
 

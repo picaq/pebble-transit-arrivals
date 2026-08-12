@@ -2,7 +2,8 @@
   "modules": {
     "*": [
       "./main",
-      "./protocol"
+      "./protocol",
+      "./pinned"
     ]
   }
 }
