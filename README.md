@@ -1,3 +1,4 @@
+
 # Transit Minute — Pebble Time 2 starter app + framework
 
 Live Bay Area transit arrivals and departures on your wrist,
@@ -6,6 +7,20 @@ live predictions that refresh automatically. Supports **SF Muni, BART,
 AC Transit, Golden Gate Transit, SamTrans, and SF Bay Ferry** out of the box via the free
 511.org regional API, with a settings toggle for each and a field to add any
 other 511 operator (Caltrain, VTA, WETA ferries, …).
+
+
+<table align="center">
+  <tr>
+    <td><img width="400" alt="image" src="https://github.com/user-attachments/assets/9aaf7153-a559-47f9-a5ef-5752be035a50" />
+</td>
+    <td><img width="420" alt="2026-08-24 16 39 25" src="https://github.com/user-attachments/assets/a6e2dada-5d92-4129-8c0c-3b0e0f47e8e0" /></td>
+  </tr>
+  <tr>
+    <td><img width="420" alt="2026-08-24 16 42 35" src="https://github.com/user-attachments/assets/708cbdbd-afc7-410a-b476-724c09a6679e" /></td>
+    <td><img width="420" alt="2026-07-09 11 20 59" src="https://github.com/user-attachments/assets/95c979fd-bd8e-49c6-8eb2-a54bda7ed2d2" /></td>
+  </tr>
+</table>
+
 
 | Code | Agency | Modes |
 | --- | --- | --- |
